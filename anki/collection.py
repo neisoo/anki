@@ -86,6 +86,7 @@ class _Collection:
     defaultSchedulerVersion = 1
     supportedSchedulerVersions = (1, 2)
 
+    # 得到使用的排期器版本。
     def schedVer(self):
         ver = self.conf.get("schedVer", self.defaultSchedulerVersion)
         if ver in self.supportedSchedulerVersions:
@@ -102,6 +103,7 @@ class _Collection:
 
         self.sched = Scheduler(self)
 
+    # 切换排期器版本。
     def changeSchedulerVer(self, ver):
         if ver == self.schedVer():
             return
@@ -126,6 +128,7 @@ class _Collection:
     # DB-related
     ##########################################################################
 
+    # 从数据库中加载数据。
     def load(self):
         (self.crt,
          self.mod,
@@ -145,6 +148,7 @@ conf, models, decks, dconf, tags from col""")
         self.decks.load(decks, dconf)
         self.tags.load(tags)
 
+    # 标记数据库有改动。
     def setMod(self):
         """Mark DB modified.
 
