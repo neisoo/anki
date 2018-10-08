@@ -536,6 +536,10 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
     # Q/A generation
     ##########################################################################
 
+    # 1.返回某张卡片的、某个笔记的或某个笔记类型的所有 “问题/答案字典”的数组
+    # 2.数组的每个元素都是一个字典，字典中['q']是问题的html字串，['a']是答案的
+    # html字串。
+    # 3. 对于填空型的会检查是否有至少一个cloze:出现。
     def renderQA(self, ids=None, type="card"):
         # gather metadata
         if type == "card":
