@@ -25,6 +25,7 @@ class Scheduler:
     _burySiblingsOnAnswer = True
 
     def __init__(self, col):
+        """构造排期器，基于一个collection。"""
         self.col = col
         self.queueLimit = 50
         self.reportLimit = 1000
@@ -34,6 +35,7 @@ class Scheduler:
         self._updateCutoff()
 
     def getCard(self):
+        """从队列中取出下一张要回答的卡片，没有卡片时返回空。"""
         "Pop the next card from the queue. None if finished."
         self._checkDay()
         if not self._haveQueues:
@@ -55,21 +57,34 @@ class Scheduler:
         self._haveQueues = True
 
     def answerCard(self, card, ease):
+        """回答getCard()取出的卡片并放回队列中。"""
         self.col.log()
         assert 1 <= ease <= 4
         self.col.markReview(card)
+
+        # 隐藏同一笔记下的其它卡片，如果用户有设置的话
         if self._burySiblingsOnAnswer:
             self._burySiblings(card)
+
+        # 累加卡片复习次数
         card.reps += 1
+
         # former is for logging new cards, latter also covers filt. decks
         card.wasNew = card.type == 0
         wasNewQ = card.queue == 0
         if wasNewQ:
+            # 新卡片队列中的卡片
+
+            # 卡片之前在新卡片队列，现在将其移动到正在学习卡片队列。
             # came from the new queue, move to learning
             card.queue = 1
+
+            # 如果之前卡片类型是新卡片，现在修改为类型为正在学习的卡片
             # if it was a new card, it's now a learning card
             if card.type == 0:
                 card.type = 1
+
+            # 获取学完该卡片的剩余步数（还要重复的次数）
             # init reps to graduation
             card.left = self._startingLeft(card)
             # dynamic?
@@ -78,16 +93,27 @@ class Scheduler:
                     # reviews get their ivl boosted on first sight
                     card.ivl = self._dynIvlBoost(card)
                     card.odue = self.today + card.ivl
+
+            # 增加卡片所在牌组和其所有父牌组的'新卡片'计数
             self._updateStats(card, 'new')
+
         if card.queue in (1, 3):
+            # 回答学习队列中的卡片
             self._answerLrnCard(card, ease)
+
+            # 增加卡片所在牌组和其所有父牌组的'学习卡片'计数
             if not wasNewQ:
                 self._updateStats(card, 'lrn')
         elif card.queue == 2:
+            # 回答复习队列中的卡片
             self._answerRevCard(card, ease)
+
+            # 增加卡片所在牌组和其所有父牌组的'复习卡片'计数
             self._updateStats(card, 'rev')
         else:
             raise Exception("Invalid queue")
+
+        # 增加卡片所在牌组和其所有父牌组的'答卡花费的时间'计数
         self._updateStats(card, 'time', card.timeTaken())
         card.mod = intTime()
         card.usn = self.col.usn()
@@ -161,6 +187,18 @@ order by due""" % self._deckLimit(),
     ##########################################################################
 
     def _updateStats(self, card, type, cnt=1):
+        """
+        更新卡片所在牌组和所有父牌组的状态的计数。
+
+        例如用于计录某个牌组当天有多少新卡片，学了多少的卡片，复习了多少卡片。
+        :param card:卡数
+        :param type:状态索引，有:'new' - 今天新卡片总数
+                              'lrn' - 今天学习的卡片总数
+                              'rev' - 今天复习的卡片总数
+                              'time' - 今天答卡总共花费时间
+        :param cnt:增加的状态计数，默认累加1。
+        :return:无
+        """
         key = type+"Today"
         for g in ([self.col.decks.get(card.did)] +
                   self.col.decks.parents(card.did)):
@@ -524,6 +562,13 @@ did = ? and queue = 3 and due <= ? limit ?""",
             return self.col.getCard(self._lrnDayQueue.pop())
 
     def _answerLrnCard(self, card, ease):
+        """
+        回答正在学习的卡
+
+        :param card:卡片
+        :param ease: 回答的效果，1=Again、2=Good、3=Easy
+        :return:无
+        """
         # ease 1=no, 2=yes, 3=remove
         conf = self._lrnConf(card)
         if card.odid and not card.wasNew:
@@ -535,20 +580,27 @@ did = ? and queue = 3 and due <= ? limit ?""",
         leaving = False
         # lrnCount was decremented once when card was fetched
         lastLeft = card.left
+
+        # 用户回答很容易，那么立即完成学习，直接放到复习卡中。
         # immediate graduate?
         if ease == 3:
             self._rescheduleAsRev(card, conf, True)
             leaving = True
+
+        # 用户回答Good，并且完成了所有的步数，那么也表示完成的学习，
+        # 放到复习卡中。
         # graduation time?
         elif ease == 2 and (card.left%1000)-1 <= 0:
             self._rescheduleAsRev(card, conf, False)
             leaving = True
         else:
+            # 用户回答Good，但没有完成所有的步数，则前进到下一步。
             # one step towards graduation
             if ease == 2:
                 # decrement real left count and recalculate left today
                 left = (card.left % 1000) - 1
                 card.left = self._leftToday(conf['delays'], left)*1000 + left
+            # 用户回答Again，表示回到第一步，重新学习。
             # failed
             else:
                 card.left = self._startingLeft(card)
@@ -604,6 +656,14 @@ did = ? and queue = 3 and due <= ? limit ?""",
             return self._newConf(card)
 
     def _rescheduleAsRev(self, card, conf, early):
+        """
+        将卡片按复习卡片重新排期
+
+        :param card:卡片
+        :param conf:配置
+        :param early:是否是提前完成
+        :return:
+        """
         lapse = card.type == 2
         if lapse:
             if self._resched(card):
@@ -627,6 +687,15 @@ did = ? and queue = 3 and due <= ? limit ?""",
                 card.due = self.col.nextID("pos")
 
     def _startingLeft(self, card):
+        """
+        获取初始剩余步数。
+        :param card: 卡片
+        :return: 低三位为总步数，其余高位为从现在到当天截止前可以完成的步数，
+        """
+
+        # 根据卡片类型获取steps的设置。
+        # - 新卡片类型：使用options/New cards中的steps的设置
+        # - 复习卡片类型：使用options/Lapses的中的steps的设置
         if card.type == 2:
             conf = self._lapseConf(card)
         else:
@@ -636,6 +705,14 @@ did = ? and queue = 3 and due <= ? limit ?""",
         return tot + tod*1000
 
     def _leftToday(self, delays, left, now=None):
+        """
+        获得从当天某个时间点开始到当天截止时间前可以完成的步数。
+        :param delays: 每一步的时间间隔数组，以分钟为单位。
+        :param left: 剩余步数。
+        :param now: 开始计算的时间点，默认为现在。
+        :return:返回步数。
+        """
+
         "The number of steps that can be completed by the day cutoff."
         if not now:
             now = intTime()
@@ -1305,11 +1382,29 @@ update cards set queue=-2,mod=?,usn=? where id in """+ids2str(cids),
     ##########################################################################
 
     def _burySiblings(self, card):
+        """
+        隐藏card的兄弟卡片（同一笔记下的其它卡片）。
+
+        详细查看文档的Siblings and Burying小节。
+        :param card:卡片
+        :return:无
+        """
         toBury = []
+
+        # 获取options/new card/bury的设置
         nconf = self._newConf(card)
         buryNew = nconf.get("bury", True)
+
+        # 获取options/review/bury的设置
         rconf = self._revConf(card)
         buryRev = rconf.get("bury", True)
+
+        # 从数据库的cards表中找出新卡片队列的兄弟卡片
+        # 和复习卡片队列中且已经到期的兄弟卡片。
+        # 兄弟卡片是指同一个笔记下的其它卡片。
+        # 将这些卡片从排期器的新卡片队列_newQueue或复习卡片队列_revQueue中移除。
+        # 同时修改cards表将这些卡片在记录在“用户隐藏的”卡片队列中。
+
         # loop through and remove from queues
         for cid,queue in self.col.db.execute("""
 select id, queue from cards where nid=? and id!=?

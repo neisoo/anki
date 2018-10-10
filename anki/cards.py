@@ -18,6 +18,18 @@ from anki.consts import *
 # - new queue: note id or random int
 # - rev queue: integer day
 # - lrn queue: integer timestamp
+#
+# type: 卡片的类型，0=新卡片队列(new)，1=正在学习的卡片，2=等待复习的卡片
+# queue：卡片所在的队列，除了上面三个同名队列，
+#        0=新卡片队列，1=正在学习的卡片队列，2=等待复习的卡片队列
+#        另外还有：
+#        -1=暂停的卡片队列，-2=用户隐藏的卡片队列，-3=调用隐藏的卡片队列
+# due 在不同的队列中有不同的用法
+# - 新卡片队列中：笔记id或随机整数
+# - 等待复习的卡片队列中：整型日期
+# - 学习队列中：整型时间戳
+# reps：卡片的重复（回答）次数
+# did: 卡片的牌组(deck) ID
 
 class Card:
 

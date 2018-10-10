@@ -671,6 +671,11 @@ where c.nid == f.id
             self._undoOp()
 
     def markReview(self, card):
+        """
+        标记一张卡片为正在复习。
+        :param card: 正在复习的卡片
+        :return: 无
+        """
         old = []
         if self._undo:
             if self._undo[0] == 1:
