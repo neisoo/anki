@@ -657,24 +657,33 @@ did = ? and queue = 3 and due <= ? limit ?""",
 
     def _rescheduleAsRev(self, card, conf, early):
         """
-        将卡片按复习卡片重新排期
+        将卡片加入复习卡片
 
         :param card:卡片
         :param conf:配置
-        :param early:是否是提前完成
-        :return:
+        :param early:=true 卡片在学习时因回答Easy而提前结束学习，加入复习卡片。
+                      = false 卡片在学习时连续点击Good完成所有的学习步骤而毕业结束学习后，加入复习卡片。
+        :return:无
         """
         lapse = card.type == 2
         if lapse:
+            # 这是一张复习卡片，表示是卡片在复习时因回答Again而失效lapse，重新加入复习卡片。
+            # 需要将复习日期按排到明天，同时加入学习队列中，学习的间隔使用Lapses/Setups设置。
+            # 如果该设置为空的话则New interval中的设置的百分比去减少间隔。
             if self._resched(card):
+                # 排期到明天复习
                 card.due = max(self.today+1, card.odue)
             else:
                 card.due = card.odue
             card.odue = 0
         else:
+            # 为一张完成学习的卡，第一次安日排复习日期和排期因子。
             self._rescheduleNew(card, conf, early)
+
+        # 卡片放到等待复习队列中，卡片类型为等待复习卡片。
         card.queue = 2
         card.type = 2
+
         # if we were dynamic, graduating means moving back to the old deck
         resched = self._resched(card)
         if card.odid:
@@ -726,24 +735,35 @@ did = ? and queue = 3 and due <= ? limit ?""",
         return ok+1
 
     def _graduatingIvl(self, card, conf, early, adj=True):
+        """返回卡片的下一次复习的间隔天数"""
+
+        # ?
         if card.type == 2:
             # lapsed card being relearnt
             if card.odid:
                 if conf['resched']:
                     return self._dynIvlBoost(card)
             return card.ivl
+
+        # 提前完成学习的，开始复习间隔为Options/New cards/Graduate interval中的值，默认为1天，也就是明天。
+        # 完成所有学习步骤的，开始复习间隔为Options/New cards/Easy interval中的值，默认为4天
+        # ints为intervals的缩写。
         if not early:
             # graduate
             ideal =  conf['ints'][0]
         else:
             # early remove
             ideal = conf['ints'][1]
+
+        # 调整间隔
         if adj:
             return self._adjRevIvl(card, ideal)
         else:
             return ideal
 
     def _rescheduleNew(self, card, conf, early):
+        """为完成学习后的新卡片安排第一次复习日期和排期因子"""
+
         "Reschedule a new card that's graduated for the first time."
         card.ivl = self._graduatingIvl(card, conf, early)
         card.due = self.today+card.ivl
@@ -981,10 +1001,22 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         return min(interval, conf['maxIvl'])
 
     def _fuzzedIvl(self, ivl):
+        """
+        给定一个间隔天数，根据间隔天数的大小，返回值附近的一个随机间隔天数。
+
+        :param ivl: 间隔天数
+        :return: 模糊的间隔天数
+        """
         min, max = self._fuzzIvlRange(ivl)
         return random.randint(min, max)
 
     def _fuzzIvlRange(self, ivl):
+        """
+        返回模糊间隔天数范围
+
+        :param ivl:间隔天数
+        :return:间隔天数范围
+        """
         if ivl < 2:
             return [1, 1]
         elif ivl == 2:
@@ -1015,6 +1047,13 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
                        self._revConf(card)['maxIvl'])
 
     def _adjRevIvl(self, card, idealIvl):
+        """
+        对精确的间隔天数做模糊处理。
+
+        :param card:卡片
+        :param idealIvl:理想的间隔天数
+        :return:模糊处理后的间隔天数
+        """
         if self._spreadRev:
             idealIvl = self._fuzzedIvl(idealIvl)
         return idealIvl
@@ -1205,9 +1244,25 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
         return ids2str(self.col.decks.active())
 
     def _resched(self, card):
+        """
+        卡片是否需要安排复习日期（排期）。
+
+        :param card:卡片
+        :return: True-要，False-不要。
+        """
+
+        # 读取卡片的配置，如果这个卡片不是临时牌组中的卡片,
+        # 那么肯定是要排期的，返回True。
+        # conf['dyn'] = True表示是临时牌组中的卡片。
         conf = self._cardConf(card)
         if not conf['dyn']:
             return True
+
+        # 如果是临时牌组中的卡片，那么就要看临时牌组设置中的
+        # Reschedule card base on my answer in this deck是否勾选上。
+        # 勾选上表示临时牌组的卡片发还到原牌组时，是否要根据此卡在
+        # 临时牌组中的回答来排期。
+        # conf['resched']表示这个选项的值。
         return conf['resched']
 
     # Daily cutoff

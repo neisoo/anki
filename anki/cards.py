@@ -30,6 +30,14 @@ from anki.consts import *
 # - 学习队列中：整型时间戳
 # reps：卡片的重复（回答）次数
 # did: 卡片的牌组(deck) ID
+# inv: 距下一次复习的间隔天数
+# due: 下一次复习时的日期（卡片类型为等待复习的卡片时）
+# factor：排期因子，
+#         一张新卡片学习完成后，每一次进入复习卡片时，值为Options/New cards/Starting ease的值。
+#         默认为250%，比较上一次复习间隔为10天，那么下一次的间隔时间就为10*250%100=25天。
+#
+# odue: old due
+# odid: old deck id
 
 class Card:
 
