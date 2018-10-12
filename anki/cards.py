@@ -36,8 +36,8 @@ from anki.consts import *
 #         一张新卡片学习完成后，每一次进入复习卡片时，值为Options/New cards/Starting ease的值。
 #         默认为250%，比较上一次复习间隔为10天，那么下一次的间隔时间就为10*250%100=25天。
 #
-# odue: old due
-# odid: old deck id
+# odue: old due 卡片加入临时牌组前的复习日期
+# odid: old deck id 卡片加入临时牌组前所在的牌组
 
 class Card:
 

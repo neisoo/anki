@@ -581,14 +581,14 @@ did = ? and queue = 3 and due <= ? limit ?""",
         # lrnCount was decremented once when card was fetched
         lastLeft = card.left
 
-        # 用户回答很容易，那么立即完成学习，直接放到复习卡中。
+        # 用户回答很容易，那么立即完成学习，直接放到复习卡队列中并排期。
         # immediate graduate?
         if ease == 3:
             self._rescheduleAsRev(card, conf, True)
             leaving = True
 
         # 用户回答Good，并且完成了所有的步数，那么也表示完成的学习，
-        # 放到复习卡中。
+        # 加入复习卡队列中并排期。
         # graduation time?
         elif ease == 2 and (card.left%1000)-1 <= 0:
             self._rescheduleAsRev(card, conf, False)
@@ -597,20 +597,27 @@ did = ? and queue = 3 and due <= ? limit ?""",
             # 用户回答Good，但没有完成所有的步数，则前进到下一步。
             # one step towards graduation
             if ease == 2:
+                # 更新步数，低3位表示剩余步数，高位表示到今天截止能完成的步数。
                 # decrement real left count and recalculate left today
                 left = (card.left % 1000) - 1
                 card.left = self._leftToday(conf['delays'], left)*1000 + left
-            # 用户回答Again，表示回到第一步，重新学习。
+            # 用户在学习卡片时回答Again，表示要回到第一步，重新学习。
             # failed
             else:
+                # 初始化步数
                 card.left = self._startingLeft(card)
+
+                # 如果有'mult'设置且需要排期
                 resched = self._resched(card)
                 if 'mult' in conf and resched:
                     # review that's lapsed
                     card.ivl = max(1, conf['minInt'], card.ivl*conf['mult'])
                 else:
+                    # 新卡片在学习过程中回答Again时，不需要排期。
                     # new card; no ivl adjustment
                     pass
+
+                # 需要排期并且是临时卡片组，旧排期改为明天。
                 if resched and card.odid:
                     card.odue = self.today + 1
             delay = self._delayForGrade(conf, card.left)
@@ -657,39 +664,53 @@ did = ? and queue = 3 and due <= ? limit ?""",
 
     def _rescheduleAsRev(self, card, conf, early):
         """
-        将卡片加入复习卡片
+        将卡片完成学习后，放入复习卡片队列中，安排复习日期（排期）。
+
+        学习完成的方式分二种：- 学习过程中直接回答Easy，提前毕业，这时early=True。
+                            - 学习过程中连续回答Good，完成所有步骤间隔而毕业，这时early=False。
+
+        学习队列中的卡片分二种：- 新卡片，也就是之前没有学习过的卡片，被加入到学习队列中进行学习。
+                                - 复习卡片，在复习时回符Again，被当成遗忘的卡片（lapse），
+                                  被加入到学习队列中，重新学习。
 
         :param card:卡片
         :param conf:配置
-        :param early:=true 卡片在学习时因回答Easy而提前结束学习，加入复习卡片。
-                      = false 卡片在学习时连续点击Good完成所有的学习步骤而毕业结束学习后，加入复习卡片。
+        :param early:学习完成的方式
         :return:无
         """
         lapse = card.type == 2
         if lapse:
-            # 这是一张复习卡片，表示是卡片在复习时因回答Again而失效lapse，重新加入复习卡片。
-            # 需要将复习日期按排到明天，同时加入学习队列中，学习的间隔使用Lapses/Setups设置。
-            # 如果该设置为空的话则New interval中的设置的百分比去减少间隔。
+            # 这是一张复习卡片，表示是卡片在复习时因回答Again而被当成遗忘的卡片（lapse）。
+            # 对于这样的卡片会加入到学习队列中重新学习，学习的间隔使用Lapses/Setups中的设置。
+            # 学习完成后将复习日期按排到明天。
+            # 如果该设置为空的话则卡片不会加入到学习队列中，而是用New interval中设置的百分比去减少复习间隔。
+            # 这种情况下，不会运行到这里。
             if self._resched(card):
                 # 排期到明天复习
                 card.due = max(self.today+1, card.odue)
             else:
+                # 不需要重排，那么还是使用原来的排期
                 card.due = card.odue
             card.odue = 0
         else:
-            # 为一张完成学习的卡，第一次安日排复习日期和排期因子。
+            # 为一张完成学习的新卡，第一次安日排复习日期和排期因子。
             self._rescheduleNew(card, conf, early)
 
         # 卡片放到等待复习队列中，卡片类型为等待复习卡片。
         card.queue = 2
         card.type = 2
 
+        # 如果是临时牌组中的卡处，完成学习后，要将卡片发还到原来的牌组中。
         # if we were dynamic, graduating means moving back to the old deck
         resched = self._resched(card)
         if card.odid:
             card.did = card.odid
             card.odue = 0
             card.odid = 0
+
+            # 如果这张卡片所在的临时牌组被设置成不需要重新排期
+            # 并且不是被遗忘的复习卡片（也就意味着这张学习完成的卡片是新卡片），
+            # 那么这张卡片被设置回新卡片。
             # if rescheduling is off, it needs to be set back to a new card
             if not resched and not lapse:
                 card.queue = card.type = 0
@@ -698,6 +719,7 @@ did = ? and queue = 3 and due <= ? limit ?""",
     def _startingLeft(self, card):
         """
         获取初始剩余步数。
+
         :param card: 卡片
         :return: 低三位为总步数，其余高位为从现在到当天截止前可以完成的步数，
         """
@@ -735,22 +757,26 @@ did = ? and queue = 3 and due <= ? limit ?""",
         return ok+1
 
     def _graduatingIvl(self, card, conf, early, adj=True):
-        """返回卡片的下一次复习的间隔天数"""
+        """返回卡片完成学习后，首次复习的间隔天数"""
 
-        # ?
+        # 卡片是被遗忘的（lapsed）而重新学习的复习卡。
         if card.type == 2:
             # lapsed card being relearnt
             if card.odid:
+                # 卡片所在临时牌组中是否有设置需要根据答复重排期。
                 if conf['resched']:
+                    # 重新确定间隔天数
                     return self._dynIvlBoost(card)
+            # 间隔天数保持不变
             return card.ivl
 
+        # 以下是针对完成学习的新卡片
         # 提前完成学习的，开始复习间隔为Options/New cards/Graduate interval中的值，默认为1天，也就是明天。
         # 完成所有学习步骤的，开始复习间隔为Options/New cards/Easy interval中的值，默认为4天
         # ints为intervals的缩写。
         if not early:
             # graduate
-            ideal =  conf['ints'][0]
+            ideal = conf['ints'][0]
         else:
             # early remove
             ideal = conf['ints'][1]
@@ -767,6 +793,8 @@ did = ? and queue = 3 and due <= ? limit ?""",
         "Reschedule a new card that's graduated for the first time."
         card.ivl = self._graduatingIvl(card, conf, early)
         card.due = self.today+card.ivl
+
+        # Options/New cards/Starting ease的设置
         card.factor = conf['initialFactor']
 
     def _logLrn(self, card, ease, conf, leaving, type, lastLeft):
@@ -1150,9 +1178,21 @@ odue = (case when odue then odue else due end),
 did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
 
     def _dynIvlBoost(self, card):
+        """为临时牌组中的复习卡计算新的间隔天数。"""
         assert card.odid and card.type == 2
         assert card.factor
+
+        # 原间隔天数中剩下的天数
         elapsed = card.ivl - (card.odue - self.today)
+
+        # factor初始值为STARTING_FACTOR（2500）。
+        # 算法：
+        #   - 新的间隔天数 = ((card.factor/1000)+1.2)/2 * 剩余间隔天数
+        #   - 新的间隔天数不超过原来的间隔天数且不小于1天。
+        # 注意：
+        #  计算用的因子会倾向1.2，也就是：
+        #   - 如果卡片的因子<1.2，因子会放大一些。
+        #   - 如果卡片的因子>1.2，因子会缩小一些。
         factor = ((card.factor/1000)+1.2)/2
         ivl = int(max(card.ivl, elapsed * factor, 1))
         conf = self._revConf(card)
@@ -1245,14 +1285,14 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
 
     def _resched(self, card):
         """
-        卡片是否需要安排复习日期（排期）。
+        卡片是否需要重新安排复习日期（排期）。
 
         :param card:卡片
         :return: True-要，False-不要。
         """
 
         # 读取卡片的配置，如果这个卡片不是临时牌组中的卡片,
-        # 那么肯定是要排期的，返回True。
+        # 那么肯定是要重新排期的，返回True。
         # conf['dyn'] = True表示是临时牌组中的卡片。
         conf = self._cardConf(card)
         if not conf['dyn']:
@@ -1261,7 +1301,7 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
         # 如果是临时牌组中的卡片，那么就要看临时牌组设置中的
         # Reschedule card base on my answer in this deck是否勾选上。
         # 勾选上表示临时牌组的卡片发还到原牌组时，是否要根据此卡在
-        # 临时牌组中的回答来排期。
+        # 临时牌组中的回答来重新排期。
         # conf['resched']表示这个选项的值。
         return conf['resched']
 
