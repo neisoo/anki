@@ -62,18 +62,19 @@ class Scheduler:
         assert 1 <= ease <= 4
         self.col.markReview(card)
 
-        # 隐藏同一笔记下的其它卡片，如果用户有设置的话
+        # 隐藏同一笔记下的其它卡片，如果用户有勾选
+        # Options/New cards/Bury related new cards until next day。
         if self._burySiblingsOnAnswer:
             self._burySiblings(card)
 
-        # 累加卡片复习次数
+        # 累加卡片重复次数
         card.reps += 1
 
         # former is for logging new cards, latter also covers filt. decks
         card.wasNew = card.type == 0
         wasNewQ = card.queue == 0
         if wasNewQ:
-            # 新卡片队列中的卡片
+            # 新卡片队列中的卡片加入学习卡片队列
 
             # 卡片之前在新卡片队列，现在将其移动到正在学习卡片队列。
             # came from the new queue, move to learning
@@ -87,7 +88,10 @@ class Scheduler:
             # 获取学完该卡片的剩余步数（还要重复的次数）
             # init reps to graduation
             card.left = self._startingLeft(card)
+
             # dynamic?
+            # 如果这张卡片还是临时牌组中的复习卡片，并且需要排期。
+            # 那么在第一次见到这张复习卡片时就排期。
             if card.odid and card.type == 2:
                 if self._resched(card):
                     # reviews get their ivl boosted on first sight
@@ -98,7 +102,7 @@ class Scheduler:
             self._updateStats(card, 'new')
 
         if card.queue in (1, 3):
-            # 回答学习队列中的卡片
+            # 回答学习队列和日学习队列中的卡片
             self._answerLrnCard(card, ease)
 
             # 增加卡片所在牌组和其所有父牌组的'学习卡片'计数
@@ -115,6 +119,8 @@ class Scheduler:
 
         # 增加卡片所在牌组和其所有父牌组的'答卡花费的时间'计数
         self._updateStats(card, 'time', card.timeTaken())
+
+        # ？
         card.mod = intTime()
         card.usn = self.col.usn()
         card.flushSched()
@@ -563,7 +569,7 @@ did = ? and queue = 3 and due <= ? limit ?""",
 
     def _answerLrnCard(self, card, ease):
         """
-        回答正在学习的卡
+        回答正在学习的卡。（在牌组或临时牌组中的新卡和遗忘的复习卡，）·
 
         :param card:卡片
         :param ease: 回答的效果，1=Again、2=Good、3=Easy
@@ -597,7 +603,8 @@ did = ? and queue = 3 and due <= ? limit ?""",
             # 用户回答Good，但没有完成所有的步数，则前进到下一步。
             # one step towards graduation
             if ease == 2:
-                # 更新步数，低3位表示剩余步数，高位表示到今天截止能完成的步数。
+                # 更新剩余步数。
+                # 低三位为剩余步数，其余高位为从现在到当天截止前可以完成的步数，
                 # decrement real left count and recalculate left today
                 left = (card.left % 1000) - 1
                 card.left = self._leftToday(conf['delays'], left)*1000 + left
@@ -607,9 +614,10 @@ did = ? and queue = 3 and due <= ? limit ?""",
                 # 初始化步数
                 card.left = self._startingLeft(card)
 
-                # 如果有'mult'设置且需要排期
+                # 如果卡片需要重排期并且Options/Lapses/New interval设置不为空
                 resched = self._resched(card)
                 if 'mult' in conf and resched:
+                    # 排期，也就是计算新的复习间隔天数。
                     # review that's lapsed
                     card.ivl = max(1, conf['minInt'], card.ivl*conf['mult'])
                 else:
@@ -620,31 +628,52 @@ did = ? and queue = 3 and due <= ? limit ?""",
                 # 需要排期并且是临时卡片组，旧排期改为明天。
                 if resched and card.odid:
                     card.odue = self.today + 1
+
+            # 获取当前步的时长。
             delay = self._delayForGrade(conf, card.left)
+
+            # 如果回答卡片逾期，为时长加上一些随机性延长。
             if card.due < time.time():
                 # not collapsed; add some randomness
                 delay *= random.uniform(1, 1.25)
+
+            # 设定新的到期时间戳
             card.due = int(time.time() + delay)
+
             # due today?
             if card.due < self.dayCutoff:
+                # 到期时间没超过今天的截止范围
+
+                # ？
                 self.lrnCount += card.left // 1000
+
                 # if the queue is not empty and there's nothing else to do, make
                 # sure we don't put it at the head of the queue and end up showing
                 # it twice in a row
+
+                # 放到学习队列中
                 card.queue = 1
-                if self._lrnQueue and not self.revCount and not self.newCount:
+
+                # 如果只剩下学习队列中还有卡片（学习队列不为空，并且复习队列和新卡片队列都为空）
+                # 那么这张卡片不要放在学习队列的头部，避免连续出现同一张卡片。
+                if self.lrnQuee and not self.revCount and not self.newCount:
                     smallestDue = self._lrnQueue[0][0]
                     card.due = max(card.due, smallestDue+1)
                 heappush(self._lrnQueue, (card.due, card.id))
             else:
+                # 如果到期时间超出了当天截止时间，那么放到日学习队列中，并设定到期日。
                 # the card is due in one or more days, so we need to use the
                 # day learn queue
                 ahead = ((card.due - self.dayCutoff) // 86400) + 1
                 card.due = self.today + ahead
                 card.queue = 3
+
+        # 添加log。
         self._logLrn(card, ease, conf, leaving, type, lastLeft)
 
     def _delayForGrade(self, conf, left):
+        """返回某一步的间隔时长，以秒为单位。"""
+
         left = left % 1000
         try:
             delay = conf['delays'][-left]
@@ -721,7 +750,7 @@ did = ? and queue = 3 and due <= ? limit ?""",
         获取初始剩余步数。
 
         :param card: 卡片
-        :return: 低三位为总步数，其余高位为从现在到当天截止前可以完成的步数，
+        :return: 低三位为剩余步数，其余高位为从现在到当天截止前可以完成的步数，
         """
 
         # 根据卡片类型获取steps的设置。
@@ -932,50 +961,75 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
     ##########################################################################
 
     def _answerRevCard(self, card, ease):
+        """回答一张复习卡片"""
+
         delay = 0
         if ease == 1:
+            # 处理用户回答Again表示遗忘的情况。
             delay = self._rescheduleLapse(card)
         else:
+            # 处理其它的情况。
             self._rescheduleRev(card, ease)
         self._logRev(card, ease, delay)
 
     def _rescheduleLapse(self, card):
+        """回答一张复习卡片时，选择了Again，表示已经遗忘了。"""
+
         conf = self._lapseConf(card)
         card.lastIvl = card.ivl
+
+        # 如果需要重排期
         if self._resched(card):
+            # 增加遗忘次数
             card.lapses += 1
+
+            # 排期
             card.ivl = self._nextLapseIvl(card, conf)
             card.factor = max(1300, card.factor-200)
             card.due = self.today + card.ivl
             # if it's a filtered deck, update odue as well
             if card.odid:
                 card.odue = card.due
-        # if suspended as a leech, nothing to do
+
+        # 如果这张卡片被当成难点移到了休眠队列中，则不用做任何事，返回。
+        # if spended as a leech, nothing to do
         delay = 0
         if self._checkLeech(card, conf) and card.queue == -1:
             return delay
+
+        # 如果Options/Lapses/Steps为空，无法移动到学习队列中，返回。
         # if no relearning steps, nothing to do
         if not conf['delays']:
             return delay
+
+        # 为后面保存due的日期
         # record rev due date for later
         if not card.odue:
             card.odue = card.due
+
+        # 得到第一步的间隔，排期，初始化剩余步骤。
         delay = self._delayForGrade(conf, 0)
         card.due = int(delay + time.time())
         card.left = self._startingLeft(card)
+
         # queue 1
         if card.due < self.dayCutoff:
+            # 当天能重新学习完所有步骤，那么加入学习队列中。
             self.lrnCount += card.left // 1000
             card.queue = 1
             heappush(self._lrnQueue, (card.due, card.id))
         else:
+            # 当天无法完成所有步骤，那么排期并加入到日学习队列中。
             # day learn queue
             ahead = ((card.due - self.dayCutoff) // 86400) + 1
             card.due = self.today + ahead
             card.queue = 3
+
+        # 如果当前要学习，那么返回第一步的延时，否则返回0.
         return delay
 
     def _nextLapseIvl(self, card, conf):
+        """每次回答遗忘时，按比例减少复习间隔天数。"""
         return max(conf['minInt'], int(card.ivl*conf['mult']))
 
     def _rescheduleRev(self, card, ease):
@@ -1011,6 +1065,14 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
     ##########################################################################
 
     def _nextRevIvl(self, card, ease):
+        """
+        根据回答，确定卡片的下一次复习间隔。
+
+        :param card: 卡片
+        :param ease: 回答 Hard - 新的间隔 = 当前间隔 * 1.2
+
+        :return:
+        """
         "Ideal next interval for CARD, given EASE."
         delay = self._daysLate(card)
         conf = self._revConf(card)
@@ -1060,12 +1122,16 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         return [ivl-fuzz, ivl+fuzz]
 
     def _constrainedIvl(self, ivl, conf, prev):
+        """
+        约束间隔为整数
+        如果有设置Options/Review/interval modifier，用它放大或缩小间隔。
+        """
         "Integer interval after interval factor and prev+1 constraints applied."
         new = ivl * conf.get('ivlFct', 1)
         return int(max(new, prev+1))
 
     def _daysLate(self, card):
-        "Number of days later than scheduled."
+        """Number of days later than scheduled."""
         due = card.odue if card.odid else card.due
         return max(0, self.today - due)
 
@@ -1202,6 +1268,14 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
     ##########################################################################
 
     def _checkLeech(self, card, conf):
+        """
+        检查卡片是否是难点。
+
+        如果一张卡回答Again的次数太多，当超过了Options/Lapses/Leech threshold的值
+        或之后每超过极限值的一半时，就将卡片添加leech标签，表示是难点。
+        """
+
+
         "Leech handler. True if card was a leech."
         lf = conf['leechFails']
         if not lf:
@@ -1213,9 +1287,13 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
             f = card.note()
             f.addTag("leech")
             f.flush()
+
+            # 执行标记为难点时的动作，
+            # 在Options/Lapses/Leech action中设置。
             # handle
             a = conf['leechAction']
             if a == 0:
+                # 移动卡片到休息队列中。
                 # if it has an old due, remove it from cram/relearning
                 if card.odue:
                     card.due = card.odue
