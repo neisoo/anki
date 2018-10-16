@@ -57,7 +57,15 @@ class Scheduler:
         self._haveQueues = True
 
     def answerCard(self, card, ease):
-        """回答getCard()取出的卡片并放回队列中。"""
+        """
+        回答getCard()取出的卡片
+
+        根据回答，对卡片进行相应的调度。
+        :param card:卡片
+        :param ease:回答
+        :return:
+        """
+
         self.col.log()
         assert 1 <= ease <= 4
         self.col.markReview(card)
@@ -120,9 +128,13 @@ class Scheduler:
         # 增加卡片所在牌组和其所有父牌组的'答卡花费的时间'计数
         self._updateStats(card, 'time', card.timeTaken())
 
-        # ？
+        # 更新卡片修改时间
         card.mod = intTime()
+
+        # ？
         card.usn = self.col.usn()
+
+        # 回存和卡片的调度有关的数据。
         card.flushSched()
 
     def counts(self, card=None):
@@ -823,7 +835,8 @@ did = ? and queue = 3 and due <= ? limit ?""",
         card.ivl = self._graduatingIvl(card, conf, early)
         card.due = self.today+card.ivl
 
-        # Options/New cards/Starting ease的设置
+        # Options/New cards/Starting ease的设置，
+        # 初始的间隔天数放大因子。
         card.factor = conf['initialFactor']
 
     def _logLrn(self, card, ease, conf, leaving, type, lastLeft):
@@ -968,12 +981,16 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
             # 处理用户回答Again表示遗忘的情况。
             delay = self._rescheduleLapse(card)
         else:
-            # 处理其它的情况。
+            # 处理其它3种回答的情况。
             self._rescheduleRev(card, ease)
         self._logRev(card, ease, delay)
 
     def _rescheduleLapse(self, card):
-        """回答一张复习卡片时，选择了Again，表示已经遗忘了。"""
+        """
+        给遗忘的复习卡片排期。
+
+        回答一张复习卡片时，选择了Again，表示已经遗忘了。
+        """
 
         conf = self._lapseConf(card)
         card.lastIvl = card.ivl
@@ -983,7 +1000,10 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
             # 增加遗忘次数
             card.lapses += 1
 
-            # 排期
+            # 为遗忘的复习卡片排期：
+            # 因子减少0.2并减少间隔天数，减少比例为
+            # Options/Lapses/New Interval，默认为0%，也就是明天。
+            # 因子不小于1.3
             card.ivl = self._nextLapseIvl(card, conf)
             card.factor = max(1300, card.factor-200)
             card.due = self.today + card.ivl
@@ -1033,15 +1053,36 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         return max(conf['minInt'], int(card.ivl*conf['mult']))
 
     def _rescheduleRev(self, card, ease):
+        """
+        给非遗忘的复习卡片排期。
+
+        回答一张复习卡片时，选择了除Again以外的回答。
+        :param card:卡片
+        :param ease:回答
+        :return:
+        """
         # update interval
         card.lastIvl = card.ivl
         if self._resched(card):
+            # 根据回答更新间隔天数
             self._updateRevIvl(card, ease)
+
+            # 调整因子：
+            # Easy: 因子增加0.15
+            # Good: 因子不变
+            # Hard: 因子减少0.15
+            # 因子不小于1.3
+
             # then the rest
             card.factor = max(1300, card.factor+[-150, 0, 150][ease-2])
+
+            # 更新到期日
             card.due = self.today + card.ivl
         else:
+            # 不用排期，使用之前保存的值
             card.due = card.odue
+
+        # 如果是临时牌组中的，将卡片发还到原牌组。
         if card.odid:
             card.did = card.odid
             card.odid = 0
@@ -1068,9 +1109,29 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         """
         根据回答，确定卡片的下一次复习间隔。
 
-        :param card: 卡片
-        :param ease: 回答 Hard - 新的间隔 = 当前间隔 * 1.2
+        算法：
+          ease = 2，表示Hard。新的间隔 = (当前间隔天数 + 迟到天数 // 4) * 1.2
+          ease = 3，表示Good。新的间隔 = (当前间隔天数 + 迟到天数 // 2） * 因子
+          ease = 4，表示Easy。新的间隔 = (当前间隔天数 + 迟到天数） * 因子 * Easy bonus
 
+          回答Hard时，表示有点困难，间隔天数会是之前的1.2倍，间隔天数增加比较慢。
+          回答Good时，表示记忆的比较好，就用现有的因子计算新的间隔天数，因子的初始值为2.5，
+          在Options/New cards/Starting ease中设置。
+          回答Easy时，表示太简单，就会在现有因子的基础上再乘以一个倍数，这个倍数
+          在Options/Reviews/Easy bonus中设置，这样可以快速放大间隔天数。
+
+          新的间隔天数最后还可以乘以一个倍数做为最终的值，这个倍数在
+          Options/Review/interval modifier中设置。
+
+          因子的初始值为2.5，每次回答Again时会减少0.2且不大于1.3。
+            # 调整因子：
+            # Again: 因子减少0.2并减少间隔天数，减少比例为Options/Lapses/New Interval，默认为0%，也就是明天。
+            # Hard: 因子减少0.15
+            # Good: 因子不变
+            # Easy: 因子增加0.15
+
+        :param card: 卡片
+        :param ease: 回答
         :return:
         """
         "Ideal next interval for CARD, given EASE."
@@ -1136,6 +1197,13 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         return max(0, self.today - due)
 
     def _updateRevIvl(self, card, ease):
+        """
+        根据回答更新间隔天数。
+
+        并保证至少比之前的间隔天数大1并小于最大间隔天数。
+        最大间隔天数在Options/Reviews/Maximum interval中设置。
+        """
+
         idealIvl = self._nextRevIvl(card, ease)
         card.ivl = min(max(self._adjRevIvl(card, idealIvl), card.ivl+1),
                        self._revConf(card)['maxIvl'])

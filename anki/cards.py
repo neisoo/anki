@@ -39,6 +39,7 @@ from anki.consts import *
 #
 # odue: old due 卡片加入临时牌组前的复习日期
 # odid: old deck id 卡片加入临时牌组前所在的牌组
+# mod：卡片最后一次修改时间
 
 class Card:
 
@@ -122,6 +123,7 @@ insert or replace into cards values
         self.col.log(self)
 
     def flushSched(self):
+        """ 回存卡片中和调度有关的数据到数据库中"""
         self.mod = intTime()
         self.usn = self.col.usn()
         # bug checks
