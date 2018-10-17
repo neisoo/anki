@@ -443,17 +443,21 @@ class DeckManager:
     #############################################################
 
     def active(self):
+        """获得所有活动牌组ID的数组。活动牌组包括当前用户选择的牌组和它的子牌组。"""
         "The currrently active dids. Make sure to copy before modifying."
         return self.col.conf['activeDecks']
 
     def selected(self):
+        """获得当前选择的牌组ID。"""
         "The currently selected did."
         return self.col.conf['curDeck']
 
     def current(self):
+        """获得当前牌组。"""
         return self.get(self.selected())
 
     def select(self, did):
+        """根据牌组ID选择一个牌组分支，这个分支上的所有牌组为活动牌组，被选择的牌组为当前牌组。"""
         "Select a new branch."
         # make sure arg is an int
         did = int(did)
@@ -466,6 +470,7 @@ class DeckManager:
         self.changed = True
 
     def children(self, did):
+        """根据牌组ID获取所有的子牌组的(name, id)。"""
         "All children of did, as (name, id)."
         name = self.get(did)['name']
         actv = []
@@ -503,6 +508,7 @@ class DeckManager:
         return childMap
 
     def parents(self, did, nameMap=None):
+        """根据牌组ID获取它的所有父牌组。"""
         "All parents of did."
         # get parent and grandparent names
         parents = []

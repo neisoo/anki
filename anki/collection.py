@@ -234,6 +234,7 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
         return self.scm > self.ls
 
     def usn(self):
+        """获取序列号"""
         return self._usn if self.server else -1
 
     def beforeUpload(self):

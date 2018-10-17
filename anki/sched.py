@@ -50,6 +50,7 @@ class Scheduler:
             return card
 
     def reset(self):
+        """重置调度器"""
         self._updateCutoff()
         self._resetLrn()
         self._resetRev()
@@ -138,6 +139,14 @@ class Scheduler:
         card.flushSched()
 
     def counts(self, card=None):
+        """
+        获取新卡片、学习卡片、复习卡片的数量。
+
+        如果card不为空，还要根据card的所在队列，累加进对应的数量中。
+        :param card: 卡片
+        :return: 返回数量元组
+        """
+
         counts = [self.newCount, self.lrnCount, self.revCount]
         if card:
             idx = self.countIdx(card)
@@ -148,7 +157,16 @@ class Scheduler:
         return tuple(counts)
 
     def dueForecast(self, days=7):
+        """
+        预测今后几天要复习的卡片数量，包括今天。
+
+        :param days:预测天数。
+        :return: 按日期顺序，返回每一天的要复习的卡片数量数组。
+        """
         "Return counts over next DAYS. Includes today."
+
+        # 从cards表中查找指定日期范围内所有到期日的复习卡片的总数，
+        # 并按到期日排序和分组。
         daysd = dict(self.col.db.all("""
 select due, count() from cards
 where did in %s and queue = 2
@@ -157,34 +175,54 @@ group by due
 order by due""" % self._deckLimit(),
                             self.today,
                             self.today+days-1))
+
+        # 处理日期范围内那些没有复习卡到期的日期。
         for d in range(days):
             d = self.today+d
             if d not in daysd:
                 daysd[d] = 0
+
+        # 按日期顺序，返回计数数组。
         # return in sorted order
         ret = [x[1] for x in sorted(daysd.items())]
         return ret
 
     def countIdx(self, card):
+        """根据卡片所在队列，获取卡片的计数索引。"""
         if card.queue == 3:
             return 1
         return card.queue
 
     def answerButtons(self, card):
+        """返回回答一张卡片时要显示的按钮数量。"""
+
+        # 临时牌组
         if card.odue:
             # normal review in dyn deck?
             if card.odid and card.queue == 2:
+                # 临时牌组中的复习卡片显示4个按钮 Again,Hard,Good,Easy
                 return 4
             conf = self._lrnConf(card)
-            if card.type in (0,1) or len(conf['delays']) > 1:
+            if card.type in (0, 1) or len(conf['delays']) > 1:
+                # 如果是新卡片或学习卡片或学习步数大于1的
+                # 显示3个按钮 Again,Good,Easy
                 return 3
+            # 其余显示2个按钮 Again,Good
             return 2
         elif card.queue == 2:
+            # 复习队列中的卡片显示4个按钮 Again,Hard,Good,Easy
             return 4
         else:
+            # 其它队列中的卡片（新卡片、学习卡片、重新学习）显示3个按钮 Again,Good,Easy
             return 3
 
     def unburyCards(self):
+        """
+        取消所有被搁置的卡片
+
+        查找cards表中所有在搁置队列中的卡片，将其放回卡片类型对应的队列中。
+        """
+
         "Unbury cards."
         self.col.conf['lastUnburied'] = self.today
         self.col.log(
@@ -193,6 +231,7 @@ order by due""" % self._deckLimit(),
             "update cards set queue=type where queue = -2")
 
     def unburyCardsForDeck(self):
+        """取消当前所有活动牌组中所有被搁置的卡片"""
         sids = ids2str(self.col.decks.active())
         self.col.log(
             self.col.db.list("select id from cards where queue = -2 and did in %s"
@@ -225,6 +264,13 @@ order by due""" % self._deckLimit(),
             self.col.decks.save(g)
 
     def extendLimits(self, new, rev):
+        """
+        修改当前牌组所在树中所有牌组当天新卡片和复习卡片数量。
+
+        :param new: 新卡片调整值
+        :param rev: 复习卡片调整值
+        :return:无
+        """
         cur = self.col.decks.current()
         parents = self.col.decks.parents(cur['id'])
         children = [self.col.decks.get(did) for (name, did) in
@@ -236,17 +282,36 @@ order by due""" % self._deckLimit(),
             self.col.decks.save(g)
 
     def _walkingCount(self, limFn=None, cntFn=None):
+        """
+        获取活动牌组的某类卡片当天可以增加的最大数量。
+
+        :param limFn: 某牌组中还可以增加的新卡片数量
+        :param cntFn: 某牌组中已有新卡片数量
+        :return: 返回活动牌组中某类卡片的总数。
+        """
         tot = 0
         pcounts = {}
+
+        # 遍历活动牌组。
         # for each of the active decks
         nameMap = self.col.decks.nameMap()
         for did in self.col.decks.active():
             # early alphas were setting the active ids as a str
             did = int(did)
+
+            # 计算这个牌组和这个牌组的所有父牌组中某类卡片的
+            # 可新增数量限制。然后这些数量限制的最小值，
+            # 即为这个牌组应该采用的最小值。也就是：
+            # lim = 这个牌组当天最多还可以增加多少张这种类型的卡片。
+            #
+            # pcounts[] 中缓存了父牌组的某类卡片的可新增数量限制。
+            # 这个起到优化作用，减少limFn的调用次数。
+
             # get the individual deck's limit
             lim = limFn(self.col.decks.get(did))
             if not lim:
                 continue
+
             # check the parents
             parents = self.col.decks.parents(did, nameMap)
             for p in parents:
@@ -255,15 +320,28 @@ order by due""" % self._deckLimit(),
                     pcounts[p['id']] = limFn(p)
                 # take minimum of child and parent
                 lim = min(pcounts[p['id']], lim)
+
+            # cnt = 这个牌组实际当天最多可以增加多少张这个类型的卡片。
+            # 因为实际上可能没有那么多牌可供添加，所以cnt可能会小于lim。
+
             # see how many cards we actually have
             cnt = cntFn(did, lim)
+
+            # 当这个牌组增加这么多张类型的卡片后
+            # 更新这个牌组和所有父牌组的数量限制。
+
             # if non-zero, decrement from parent counts
             for p in parents:
                 pcounts[p['id']] -= cnt
+
             # we may also be a parent
             pcounts[did] = lim - cnt
+
+            # 累加数量
             # and add to running total
             tot += cnt
+
+        # 返回所有活动牌组的某类卡片当天可以增加的最大数量。
         return tot
 
     # Deck list
@@ -403,34 +481,64 @@ order by due""" % self._deckLimit(),
     ##########################################################################
 
     def _resetNewCount(self):
+        """重新计算活动牌组当天可以增加新卡片的最大数量。"""
+
+        # 匿名函数,获取cards表中属于指定牌组的并在新卡片队列中的卡片总数
         cntFn = lambda did, lim: self.col.db.scalar("""
 select count() from (select 1 from cards where
 did = ? and queue = 0 limit ?)""", did, lim)
+
         self.newCount = self._walkingCount(self._deckNewLimitSingle, cntFn)
 
     def _resetNew(self):
+        """重置新卡片相关数据"""
         self._resetNewCount()
         self._newDids = self.col.decks.active()[:]
         self._newQueue = []
         self._updateNewCardRatio()
 
     def _fillNew(self):
+        """
+        填充调度器的新卡片队列。
+
+        :return: 返回Ture表示调度器的新卡片队列不为空，否则表示没有当天没有更多的新卡片需要学习
+        """
+
+        # 调度器的新卡片队列还有卡片，返回ture。
         if self._newQueue:
             return True
+
+        # 已经达到当日学习新卡片的限制，返回false。
         if not self.newCount:
             return False
+
+        # 调度器的新卡片队列为空，但还没有抽取足够的新卡片（没有达到当日学习新卡片的限制）时，
+        # 那么就从活动牌组中找出一个有新卡片的牌组，并从它的新卡片队列中抽取新卡片，填充到调度器的新卡片队列中。
+
+        # 遍历可提供新卡片的牌组
         while self._newDids:
+            # lim:获得这个牌组当日可添加到新卡片队列中的新卡片数量限制
             did = self._newDids[0]
             lim = min(self.queueLimit, self._deckNewLimit(did))
             if lim:
+                # 从这个牌组的新卡片队列中抽取lim新张卡片到内存中的新卡片队列中。
+                # 因为新卡片队列中的due值为笔记id或随机整数，
+                # 所以按order排序就可以实现按添加顺序或随机顺序抽取新卡片来学习。
                 # fill the queue with the current did
                 self._newQueue = self.col.db.list("""
 select id from cards where did = ? and queue = 0 order by due limit ?""", did, lim)
+
+                # 反序并返回卡ID列表。
                 if self._newQueue:
                     self._newQueue.reverse()
                     return True
+
+            # 这个牌组中没有新卡片，查看下一个牌组。
             # nothing left in the deck; move to next
             self._newDids.pop(0)
+
+        # 全部都没有新卡片，但可添加新卡片数量又不为零。
+        # 那么重置新卡片数据，再重新检查，直到符合。
         if self.newCount:
             # if we didn't get a card but the count is non-zero,
             # we need to check again for any cards that were
@@ -439,13 +547,23 @@ select id from cards where did = ? and queue = 0 order by due limit ?""", did, l
             return self._fillNew()
 
     def _getNewCard(self):
+        """从调度器的新卡片队列的队尾取一张卡片。"""
+
+        # 调度器的新卡片队列如果为空，那么继续从活动牌组中抽取新卡片来填充调度器的新卡片队列。
+        # 直到返回false，表示没有可抽取的新卡片或达到当日可学习新卡片的限制。
         if self._fillNew():
+            # 从调度器的新卡片队列的队尾取一张卡片，并减少计数，当计算减到0时表示
+            # 已经达到当日学习新卡片的限制。
             self.newCount -= 1
             return self.col.getCard(self._newQueue.pop())
 
     def _updateNewCardRatio(self):
+        """根据新卡与复习卡片的混合方式设置，来确定每间隔多少张卡片可插入一张新卡片。"""
+
+        # Preference/Basic/Mix new cards and reviews.
         if self.col.conf['newSpread'] == NEW_CARDS_DISTRIBUTE:
             if self.newCount:
+                # 每间隔多少张卡片可插入一张新卡片。
                 self.newCardModulus = (
                     (self.newCount + self.revCount) // self.newCount)
                 # if there are cards to review, ensure modulo >= 2
@@ -455,6 +573,12 @@ select id from cards where did = ? and queue = 0 order by due limit ?""", did, l
         self.newCardModulus = 0
 
     def _timeForNewCard(self):
+        """
+        这一次是否应该轮到新卡片显示
+
+        根据Preferences/Basic中新卡的显示顺序设置决定是否该新卡显示了。
+        """
+
         "True if it's time to display a new card when distributing."
         if not self.newCount:
             return False
@@ -466,10 +590,15 @@ select id from cards where did = ? and queue = 0 order by due limit ?""", did, l
             return self.reps and self.reps % self.newCardModulus == 0
 
     def _deckNewLimit(self, did, fn=None):
+        """计算牌组当天最多可以添加多少张新卡片到新卡片队列中，考虑父牌组的每日新卡片数量限制。"""
+
         if not fn:
             fn = self._deckNewLimitSingle
         sel = self.col.decks.get(did)
         lim = -1
+
+        # 遍历牌组和所有父牌组，找出最小限制数量。
+
         # for the deck and each of its parents
         for g in [sel] + self.col.decks.parents(did):
             rem = fn(g)
@@ -480,6 +609,13 @@ select id from cards where did = ? and queue = 0 order by due limit ?""", did, l
         return lim
 
     def _newForDeck(self, did, lim):
+        """
+        获到指定牌组中的新卡总数。
+
+        :param did: 牌组ID。
+        :param lim: 最大限制。
+        :return:返回新卡总数，值不超过lim。
+        """
         "New count for a single deck."
         if not lim:
             return 0
@@ -489,13 +625,17 @@ select count() from
 (select 1 from cards where did = ? and queue = 0 limit ?)""", did, lim)
 
     def _deckNewLimitSingle(self, g):
+        """计算牌组中当天最多可以添加多少张新卡片到新卡片队列中，不考虑父牌组的每日新卡片数量限制。"""
         "Limit for deck without parent limits."
         if g['dyn']:
             return self.reportLimit
         c = self.col.decks.confForDid(g['id'])
+
+        # Optins/New cards/"New cards/day" 中的设置 - 当天已有新卡片计数。
         return max(0, c['new']['perDay'] - g['newToday'][1])
 
     def totalNewForCurrentDeck(self):
+        """返回活动牌组中所有新卡片的总数。"""
         return self.col.db.scalar(
             """
 select count() from cards where id in (
@@ -1477,6 +1617,8 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
             self.unburyCards()
 
     def _checkDay(self):
+        """如果时间跨越当日截止时间，那么重置调度器。"""
+
         # check if the day has rolled over
         if time.time() > self.dayCutoff:
             self.reset()
