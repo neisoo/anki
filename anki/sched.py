@@ -37,16 +37,28 @@ class Scheduler:
     def getCard(self):
         """从队列中取出下一张要回答的卡片，没有卡片时返回空。"""
         "Pop the next card from the queue. None if finished."
+
+        # 跨日时重置调度器。
         self._checkDay()
+
+        # 调度器中队列还没有初始化时重置调度器。
         if not self._haveQueues:
             self.reset()
+
+        # 按一定的优先级取卡。
         card = self._getCard()
         if card:
             self.col.log(card)
+
+            # 搁置兄弟卡片，避免在同一天出现互相干挠。
             if not self._burySiblingsOnAnswer:
                 self._burySiblings(card)
             self.reps += 1
+
+            # 卡片开始计时，用于记录回答这张卡片的耗时。
             card.startTimer()
+
+            # 返回卡片。
             return card
 
     def reset(self):
@@ -283,11 +295,11 @@ order by due""" % self._deckLimit(),
 
     def _walkingCount(self, limFn=None, cntFn=None):
         """
-        获取活动牌组的某类卡片当天可以增加的最大数量。
+        获取活动牌组的某类卡片当天可以抽取的最大数量。
 
-        :param limFn: 某牌组中还可以增加的新卡片数量
-        :param cntFn: 某牌组中已有新卡片数量
-        :return: 返回活动牌组中某类卡片的总数。
+        :param limFn: 回调 - 计算某牌组中当天还可以抽取的某类卡片数量
+        :param cntFn: 回调 - 计算某牌组中某类卡片数量
+        :return: 返回活动牌组的某类卡片当天可以抽取的最大数量。
         """
         tot = 0
         pcounts = {}
@@ -300,11 +312,11 @@ order by due""" % self._deckLimit(),
             did = int(did)
 
             # 计算这个牌组和这个牌组的所有父牌组中某类卡片的
-            # 可新增数量限制。然后这些数量限制的最小值，
+            # 可抽取的数量限制。然后这些数量限制的最小值，
             # 即为这个牌组应该采用的最小值。也就是：
-            # lim = 这个牌组当天最多还可以增加多少张这种类型的卡片。
+            # lim = 这个牌组当天最多还可以抽取多少张这种类型的卡片。
             #
-            # pcounts[] 中缓存了父牌组的某类卡片的可新增数量限制。
+            # pcounts[] 中缓存了父牌组的某类卡片的可抽取数量限制。
             # 这个起到优化作用，减少limFn的调用次数。
 
             # get the individual deck's limit
@@ -321,13 +333,13 @@ order by due""" % self._deckLimit(),
                 # take minimum of child and parent
                 lim = min(pcounts[p['id']], lim)
 
-            # cnt = 这个牌组实际当天最多可以增加多少张这个类型的卡片。
-            # 因为实际上可能没有那么多牌可供添加，所以cnt可能会小于lim。
+            # cnt = 这个牌组实际当天最多可以抽取多少张这个类型的卡片。
+            # 因为实际上可能没有那么多牌可供抽取，所以cnt<=lim。
 
             # see how many cards we actually have
             cnt = cntFn(did, lim)
 
-            # 当这个牌组增加这么多张类型的卡片后
+            # 当这个牌组抽取这么多张类型的卡片后
             # 更新这个牌组和所有父牌组的数量限制。
 
             # if non-zero, decrement from parent counts
@@ -337,37 +349,65 @@ order by due""" % self._deckLimit(),
             # we may also be a parent
             pcounts[did] = lim - cnt
 
-            # 累加数量
+            # 累加抽取数量
             # and add to running total
             tot += cnt
 
-        # 返回所有活动牌组的某类卡片当天可以增加的最大数量。
+        # 返回所有活动牌组中的某类卡片当天可以抽取的最大数量。
         return tot
 
     # Deck list
     ##########################################################################
 
     def deckDueList(self):
+        """
+        获取线性结构的牌组列表，列表每个元素的结构为：
+        [牌组名字，牌组ID，复习卡片数量，学习卡片数量，新卡片数量]
+
+        例如下面的牌组结构
+        a::a1::a2
+        b::b1
+        c
+
+        表示为：
+        [
+            [a,         1, xx, xx, xx]
+            [a::a1,     2, xx, xx, xx]
+            [a::a1::a2, 3, xx, xx, xx]
+            [b,         4, xx, xx, xx]
+            [b::b1,     5, xx, xx, xx]
+            [c,         6, xx, xx, xx]
+        ]
+        """
+
         "Returns [deckname, did, rev, lrn, new]"
         self._checkDay()
         self.col.decks.recoverOrphans()
+
+        # 获取所有的牌组并按名字排序
         decks = self.col.decks.all()
         decks.sort(key=itemgetter('name'))
         lims = {}
         data = []
+
+        # 获取父牌组名
         def parent(name):
             parts = name.split("::")
             if len(parts) < 2:
                 return None
             parts = parts[:-1]
             return "::".join(parts)
+
+        # 按名字顺序，遍历牌组。
         for deck in decks:
+            # 如果遇到有牌组和前面牌组重名的，重新命名牌组避免重名，保存后并重新加载。
             # if we've already seen the exact same deck name, rename the
             # invalid duplicate and reload
             if deck['name'] in lims:
                 deck['name'] += "1"
                 self.col.decks.save(deck)
                 return self.deckDueList()
+            # 确保没有::之间没有为空的情况。否则牌组名改为recovered，保存后并重新加载。
             # ensure no sections are blank
             if not all(deck['name'].split("::")):
                 deck['name'] = "recovered"
@@ -375,33 +415,76 @@ order by due""" % self._deckLimit(),
                 return self.deckDueList()
 
             p = parent(deck['name'])
+
+            # new = 这个牌组当天可添加的新卡片数
             # new
             nlim = self._deckNewLimitSingle(deck)
             if p:
                 if p not in lims:
+                    # 如果有父牌组要确保父牌组存在，
+                    # 否则牌组名改为recovered，保存后并重新加载。
                     # if parent was missing, this deck is invalid
                     deck['name'] = "recovered"
                     self.col.decks.save(deck)
                     return self.deckDueList()
                 nlim = min(nlim, lims[p][0])
             new = self._newForDeck(deck['id'], nlim)
+
+            # lrn = 这个牌组当天要学习的卡片数
             # learning
             lrn = self._lrnForDeck(deck['id'])
+
+            # rlim = 这个牌组当天可添加的复习卡片数
             # reviews
             rlim = self._deckRevLimitSingle(deck)
             if p:
                 rlim = min(rlim, lims[p][1])
             rev = self._revForDeck(deck['id'], rlim)
+
             # save to list
             data.append([deck['name'], deck['id'], rev, lrn, new])
+
             # add deck as a parent
             lims[deck['name']] = [nlim, rlim]
         return data
 
     def deckDueTree(self):
+        """
+        返回树状结构的牌组列表，列表每个元素的结构为：
+        [牌组名字，牌组ID，复习卡片数量，学习卡片数量，新卡片数量，[子牌组的树状结构列表]]
+
+        例如下面的牌组结构
+        a::a1::a2
+        b::b1
+        c
+
+        线性结构grps表示为：
+        [
+            [a,         1, xx, xx, xx]
+            [a::a1,     2, xx, xx, xx]
+            [a::a1::a2, 3, xx, xx, xx]
+            [b,         4, xx, xx, xx]
+            [b::b1,     5, xx, xx, xx]
+            [c,         6, xx, xx, xx]
+        ]
+
+        树型结构表示为：
+        [
+            [a, 1, xx, xx, xx, [a1, 2, xx, xx, xx, [a2, 3, xx, xx, xx]]],
+            [b, 4, xx, xx, xx, [b1, 5, xx, xx, xx]],
+            [c, 6, xx, xx, xx]
+        ]
+
+
+        :param grps:线性结构表示的牌组列表。
+        :return:树型结构表示的牌组列表。
+        """
+
+        """返回树状结构的牌组列表，包括到牌组期信息"""
         return self._groupChildren(self.deckDueList())
 
     def _groupChildren(self, grps):
+        """将树状结构的牌组列表转换成树型结构列表"""
         # first, split the group names into components
         for g in grps:
             g[0] = g[0].split("::")
@@ -411,10 +494,19 @@ order by due""" % self._deckLimit(),
         return self._groupChildrenMain(grps)
 
     def _groupChildrenMain(self, grps):
+        """
+        将树状结构的牌组列表转换成树型结构列表的递归实现
+
+        :param grps:线性结构表示的牌组列表。
+        :return:树型结构表示的牌组列表。
+        """
+
         tree = []
         # group and recurse
         def key(grp):
             return grp[0][0]
+
+        # 按顶层牌组名分组并按分组遍历
         for (head, tail) in itertools.groupby(grps, key=key):
             tail = list(tail)
             did = None
@@ -422,23 +514,29 @@ order by due""" % self._deckLimit(),
             new = 0
             lrn = 0
             children = []
+            # 遍历该顶层牌组名下的子牌组
             for c in tail:
                 if len(c[0]) == 1:
+                    # 叶子牌组
                     # current node
                     did = c[1]
                     rev += c[2]
                     lrn += c[3]
                     new += c[4]
                 else:
+                    # 非叶子牌组，添加到children列表，后面递归用。
                     # set new string to tail
                     c[0] = c[0][1:]
                     children.append(c)
+            # 用同样的方法递归所有的子牌组。
             children = self._groupChildrenMain(children)
+            # 累计各个子牌组的各类卡片数做为自己的卡片数。
             # tally up children counts
             for ch in children:
                 rev += ch[2]
                 lrn += ch[3]
                 new += ch[4]
+            # 按牌组中设置的限制来限制各类卡片数。
             # limit the counts to the deck's limits
             conf = self.col.decks.confForDid(did)
             deck = self.col.decks.get(did)
@@ -446,34 +544,52 @@ order by due""" % self._deckLimit(),
                 rev = max(0, min(rev, conf['rev']['perDay']-deck['revToday'][1]))
                 new = max(0, min(new, conf['new']['perDay']-deck['newToday'][1]))
             tree.append((head, did, rev, lrn, new, children))
+
+        # 转成元组类型，元组类型是只读的。
         return tuple(tree)
 
     # Getting the next card
     ##########################################################################
 
     def _getCard(self):
+        """返回下一张到期的卡片，如果没有返回空。"""
+
         "Return the next due card id, or None."
+
+        # 先取调度器学习队列中的卡片。
         # learning card due?
         c = self._getLrnCard()
         if c:
             return c
+
+        # 适当的时候取调度器新卡片队列中的卡片。
         # new first, or time for one?
         if self._timeForNewCard():
             c = self._getNewCard()
             if c:
                 return c
+
+        # 取调度器复习卡片队列中的卡片。
         # card due for review?
         c = self._getRevCard()
         if c:
             return c
+
+        # 取调度器跨日学习卡片队列中的卡片。
         # day learning card due?
         c = self._getLrnDayCard()
         if c:
             return c
+
+        # 取调度器新卡片队列中的卡片。
         # new cards left?
         c = self._getNewCard()
         if c:
             return c
+
+        # 没有其它任何卡片时，提前从学习队列中取出
+        # 一张将在未来一段在时间内会到期的卡片。这段时间的长短在
+        # Preference/Basic/Learn ahead limit中设置。
         # collapse or finish
         return self._getLrnCard(collapse=True)
 
@@ -491,7 +607,7 @@ did = ? and queue = 0 limit ?)""", did, lim)
         self.newCount = self._walkingCount(self._deckNewLimitSingle, cntFn)
 
     def _resetNew(self):
-        """重置新卡片相关数据"""
+        """重置调度器中新卡片相关数据"""
         self._resetNewCount()
         self._newDids = self.col.decks.active()[:]
         self._newQueue = []
@@ -590,7 +706,7 @@ select id from cards where did = ? and queue = 0 order by due limit ?""", did, l
             return self.reps and self.reps % self.newCardModulus == 0
 
     def _deckNewLimit(self, did, fn=None):
-        """计算牌组当天最多可以添加多少张新卡片到新卡片队列中，考虑父牌组的每日新卡片数量限制。"""
+        """计算did牌组当天最多可以抽取多少张某类型卡片到调度器队列中，要考虑父牌组的抽取数量限制。"""
 
         if not fn:
             fn = self._deckNewLimitSingle
@@ -646,6 +762,7 @@ select id from cards where did in %s and queue = 0 limit ?)"""
     ##########################################################################
 
     def _resetLrnCount(self):
+        """"重新计算活动牌组当天可以抽取学习卡片的最大数量。"""
         # sub-day
         self.lrnCount = self.col.db.scalar("""
 select sum(left/1000) from (select left from cards where
@@ -659,6 +776,7 @@ and due <= ? limit %d""" % (self._deckLimit(), self.reportLimit),
                                             self.today)
 
     def _resetLrn(self):
+        """重置调度器中关于学习队列的数据"""
         self._resetLrnCount()
         self._lrnQueue = []
         self._lrnDayQueue = []
@@ -666,6 +784,8 @@ and due <= ? limit %d""" % (self._deckLimit(), self.reportLimit),
 
     # sub-day learning
     def _fillLrn(self):
+        #？？
+        """填充调度器中的学习队列"""
         if not self.lrnCount:
             return False
         if self._lrnQueue:
@@ -679,7 +799,15 @@ limit %d""" % (self._deckLimit(), self.reportLimit), lim=self.dayCutoff)
         return self._lrnQueue
 
     def _getLrnCard(self, collapse=False):
+        """
+        如果调度器的学习队列的队头卡片已经到期，那么从队头取出并返回这张卡片。
+
+        :param collapse:是否考虑提前取卡，见Preference/Basic/Learn ahead limit设置。
+        :return:返回的卡片
+        """
+        """"""
         if self._fillLrn():
+            # 截止时间
             cutoff = time.time()
             if collapse:
                 cutoff += self.col.conf['collapseTime']
@@ -1014,11 +1142,23 @@ where queue in (1,3) and type = 2
             "select id from cards where queue in (1,3) %s" % extra))
 
     def _lrnForDeck(self, did):
+        """计算当天要学习的卡片数量。"""
+
+        # collapseTime是Preferences/Basic/Learn ahead limit的设置。
+        # 也就是现在当前牌组中所有学习步骤都学完了，但还有正在学习的卡只是没到期时。
+        # 如果collapseTime时间之内会有正在学习的卡到期，并且没有其它的
+        # 事要做，那么就会提前学习这张卡，否则显示congratulation表示都完成了。
+
+        # 计算还有多少张卡片需要学习（同一张卡，要学习三个步骤，算3张卡。）
+        # 从cards数据表中查找指定牌组的，学习队列中，在未来collapseTime时间之内
+        # 到期所有步片学习步数的总数。
         cnt = self.col.db.scalar(
             """
 select sum(left/1000) from
 (select left from cards where did = ? and queue = 1 and due < ? limit ?)""",
             did, intTime() + self.col.conf['collapseTime'], self.reportLimit) or 0
+
+        # 再加上跨天的日学习队列中的卡片
         return cnt + self.col.db.scalar(
             """
 select count() from
@@ -1030,15 +1170,18 @@ and due <= ? limit ?)""",
     ##########################################################################
 
     def _deckRevLimit(self, did):
+        """返回某个牌组当天最大可抽取的复习卡片数，考虑父牌组的限制"""
         return self._deckNewLimit(did, self._deckRevLimitSingle)
 
     def _deckRevLimitSingle(self, d):
+        """返回某个牌组当天最大可抽取的复习卡片数，不考虑父牌组的限制"""
         if d['dyn']:
             return self.reportLimit
         c = self.col.decks.confForDid(d['id'])
         return max(0, c['rev']['perDay'] - d['revToday'][1])
 
     def _revForDeck(self, did, lim):
+        """返回did牌组当天到期的复习卡片数量，最大值不超过lim。"""
         lim = min(lim, self.reportLimit)
         return self.col.db.scalar(
             """
@@ -1048,6 +1191,7 @@ and due <= ? limit ?)""",
             did, self.today, lim)
 
     def _resetRevCount(self):
+        """"重新计算活动牌组当天可以抽取复习卡片的最大数量。"""
         def cntFn(did, lim):
             return self.col.db.scalar("""
 select count() from (select id from cards where
@@ -1057,19 +1201,33 @@ did = ? and queue = 2 and due <= ? limit %d)""" % lim,
             self._deckRevLimitSingle, cntFn)
 
     def _resetRev(self):
+        """重置调度器中关于复习卡片的数据"""
         self._resetRevCount()
         self._revQueue = []
         self._revDids = self.col.decks.active()[:]
 
     def _fillRev(self):
+        """填充调度器的复习卡片队列。"""
+
+        # 调度器的复习卡片队列不为空，返回TRUE。
         if self._revQueue:
             return True
+
+        # 已经达到当日复习卡片数限制，返回FALSE。
         if not self.revCount:
             return False
+
+        # 调度器的复习卡片队列为空，但还没有抽取足够的复习卡片（没有达到当日学习复习卡片的限制）时，
+        # 那么就从活动牌组中找出一个有复习卡片的牌组，并从它的复习卡片队列中抽取复习卡片，
+        # 填充到调度器的复习卡片队列中。
+
+        # 遍历所有可以提供复习卡片的牌组。
         while self._revDids:
+            # lim:获得这个牌组当日可添加到新卡片队列中的新卡片数量限制
             did = self._revDids[0]
             lim = min(self.queueLimit, self._deckRevLimit(did))
             if lim:
+                # 从这个牌组的复习卡片队列中抽取lim张卡片到调度器的复习卡片队列。
                 # fill the queue with the current did
                 self._revQueue = self.col.db.list("""
 select id from cards where
@@ -1078,19 +1236,29 @@ did = ? and queue = 2 and due <= ? limit ?""",
                 if self._revQueue:
                     # ordering
                     if self.col.decks.get(did)['dyn']:
+                        # 动态牌组中的到期时间是反的。
                         # dynamic decks need due order preserved
                         self._revQueue.reverse()
                     else:
+                        # 随机打乱队列中牌的顺序。
                         # random order for regular reviews
                         r = random.Random()
                         r.seed(self.today)
                         r.shuffle(self._revQueue)
+
+                    # 这个牌组已经取完了所有复习卡片。
+                    # 下一次填充时，要从下一个牌组中取卡片。
                     # is the current did empty?
                     if len(self._revQueue) < lim:
                         self._revDids.pop(0)
                     return True
+
+            # 这个牌组中没有可取的复习卡片，查看下一个牌组。
             # nothing left in the deck; move to next
             self._revDids.pop(0)
+
+        # 没有取到复习卡片，但可抽取的复习卡片数量又不为零。
+        # 那么重置复习卡片数据，再重新抽取，直到符合。
         if self.revCount:
             # if we didn't get a card but the count is non-zero,
             # we need to check again for any cards that were
@@ -1099,11 +1267,14 @@ did = ? and queue = 2 and due <= ? limit ?""",
             return self._fillRev()
 
     def _getRevCard(self):
+        """取调度器复习卡片队列中的卡片"""
+
         if self._fillRev():
             self.revCount -= 1
             return self.col.getCard(self._revQueue.pop())
 
     def totalRevForCurrentDeck(self):
+        """计算活动牌组中共有多少复习队列中的卡片到期，最大不超过动态牌组中设置的是大卡片数。"""
         return self.col.db.scalar(
             """
 select count() from cards where id in (

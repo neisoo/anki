@@ -433,6 +433,7 @@ class DeckManager:
                                 ids2str(dids))
 
     def recoverOrphans(self):
+        """如果卡片的牌组ID无效，将卡片的牌组ID改为1。"""
         dids = list(self.decks.keys())
         mod = self.col.db.mod
         self.col.db.execute("update cards set did = 1 where did not in "+
