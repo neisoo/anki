@@ -26,11 +26,19 @@ class Scheduler:
 
     def __init__(self, col):
         """构造排期器，基于一个collection。"""
+
+        # 要调度的牌组集
         self.col = col
+
+        # 调度器内各个队列的最大长度
         self.queueLimit = 50
         self.reportLimit = 1000
         self.reps = 0
+
+        # 今天的日期
         self.today = None
+
+        # 调度器内各个队列是否已经初始化
         self._haveQueues = False
         self._updateCutoff()
 
@@ -624,7 +632,7 @@ did = ? and queue = 0 limit ?)""", did, lim)
         if self._newQueue:
             return True
 
-        # 已经达到当日学习新卡片的限制，返回false。
+        # 已经达到当日新卡片数量的限制，返回false。
         if not self.newCount:
             return False
 
@@ -784,16 +792,23 @@ and due <= ? limit %d""" % (self._deckLimit(), self.reportLimit),
 
     # sub-day learning
     def _fillLrn(self):
-        #？？
         """填充调度器中的学习队列"""
+
+        # 已经达到当日学习卡片的限制，返回false。
         if not self.lrnCount:
             return False
+
+        # 调度器中的学习队列中还有卡片，不需要填充，返回true。
         if self._lrnQueue:
             return True
+
+        # 从cards数据表中查找活动牌组中的学习队列，并且今天截止前到期的卡片。
         self._lrnQueue = self.col.db.all("""
 select due, id from cards where
 did in %s and queue = 1 and due < :lim
 limit %d""" % (self._deckLimit(), self.reportLimit), lim=self.dayCutoff)
+
+        # 按到期时间排序。
         # as it arrives sorted by did first, we need to sort it
         self._lrnQueue.sort()
         return self._lrnQueue
@@ -819,30 +834,46 @@ limit %d""" % (self._deckLimit(), self.reportLimit), lim=self.dayCutoff)
 
     # daily learning
     def _fillLrnDay(self):
+        """填充调度器中的跨日学习队列"""
+
+        # 已经达到当日学习卡片的限制，返回false。
         if not self.lrnCount:
             return False
+
+        # 调度器中的跨日学习队列中还有卡片，不需要填充，返回true。
         if self._lrnDayQueue:
             return True
+
+        # 遍历活动牌组。
         while self._lrnDids:
+
+            # 从数据表cards中查找这个牌组的在日学习队列中的并且到期的卡片。
             did = self._lrnDids[0]
             # fill the queue with the current did
             self._lrnDayQueue = self.col.db.list("""
 select id from cards where
 did = ? and queue = 3 and due <= ? limit ?""",
                                     did, self.today, self.queueLimit)
+            # 抽到卡片了。
             if self._lrnDayQueue:
+                # 打乱卡片的顺序。
                 # order
                 r = random.Random()
                 r.seed(self.today)
                 r.shuffle(self._lrnDayQueue)
+
+                # 这个牌组没有更多的日学习卡片可抽取，查看下一个牌组。
                 # is the current did empty?
                 if len(self._lrnDayQueue) < self.queueLimit:
                     self._lrnDids.pop(0)
                 return True
+
+            # 这个牌组没有更多的日学习卡片可抽取，查看下一个牌组。
             # nothing left in the deck; move to next
             self._lrnDids.pop(0)
 
     def _getLrnDayCard(self):
+        """从调度器的日学习卡片队列的队头取出一张卡片。"""
         if self._fillLrnDay():
             self.lrnCount -= 1
             return self.col.getCard(self._lrnDayQueue.pop())
@@ -966,9 +997,12 @@ did = ? and queue = 3 and due <= ? limit ?""",
         return delay*60
 
     def _lrnConf(self, card):
+        """获取正在学习的卡片的设置"""
         if card.type == 2:
+            # 卡片类型为复习卡，取遗忘设置。
             return self._lapseConf(card)
         else:
+            # 卡片类型为新卡片，取新卡片设置。
             return self._newConf(card)
 
     def _rescheduleAsRev(self, card, conf, early):
@@ -1108,6 +1142,8 @@ did = ? and queue = 3 and due <= ? limit ?""",
         card.factor = conf['initialFactor']
 
     def _logLrn(self, card, ease, conf, leaving, type, lastLeft):
+        """新增一条日志到reglog表。"""
+
         lastIvl = -(self._delayForGrade(conf, lastLeft))
         ivl = card.ivl if leaving else -(self._delayForGrade(conf, card.left))
         def log():
@@ -1123,13 +1159,26 @@ did = ? and queue = 3 and due <= ? limit ?""",
             log()
 
     def removeLrn(self, ids=None):
+        """
+        将正在学习的卡片发还到它们原来的队列中。。
+
+        :param ids:要发还的卡片ID，如果为空表示所有正在学习的卡片。
+        :return:无
+        """
+
         "Remove cards from the learning queues."
+
         if ids:
             extra = " and id in "+ids2str(ids)
         else:
             # benchmarks indicate it's about 10x faster to search all decks
             # with the index than scan the table
             extra = " and did in "+ids2str(self.col.decks.allIds())
+
+        # 将所有在学习队列和日学习队列中的复习卡片移回
+        # 复习队列，到期日还原为移动到学习队列前的到期日，
+        # 更新修改日期。
+
         # review cards in relearning
         self.col.db.execute("""
 update cards set
@@ -1137,6 +1186,10 @@ due = odue, queue = 2, mod = %d, usn = %d, odue = 0
 where queue in (1,3) and type = 2
 %s
 """ % (intTime(), self.col.usn(), extra))
+
+        # 到这里，还在学习队列和日学习队列中卡片就只有新卡片了。
+        # 将新卡片发还新卡片队列中。
+
         # new cards in learning
         self.forgetCards(self.col.db.list(
             "select id from cards where queue in (1,3) %s" % extra))
@@ -1400,6 +1453,8 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
             card.odue = 0
 
     def _logRev(self, card, ease, delay):
+        """添加一条复习日志。"""
+
         def log():
             self.col.db.execute(
                 "insert into revlog values (?,?,?,?,?,?,?,?,?)",
@@ -1535,10 +1590,20 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
     ##########################################################################
 
     def rebuildDyn(self, did=None):
+        """
+        重建动态牌组。
+
+        :param did: 牌组ID，要从哪个牌组重建动态牌组，默认为当前选择牌组。
+        :return:
+        """
         "Rebuild a dynamic deck."
         did = did or self.col.decks.selected()
         deck = self.col.decks.get(did)
+
+        # 不能在动态牌组上创建动态牌组。
         assert deck['dyn']
+
+        # 先将动态牌组中的卡片发还，再填充动态牌组。
         # move any existing cards back first, then fill
         self.emptyDyn(did)
         ids = self._fillDyn(deck)
@@ -1549,7 +1614,15 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         return ids
 
     def _fillDyn(self, deck):
+        """
+        填充动态牌组
+        :param deck:
+        :return:
+        """
+        # 获取这个动态牌组的设置。
         search, limit, order = deck['terms'][0]
+
+        # 获取查询语句
         orderlimit = self._dynOrder(order, limit)
         if search.strip():
             search = "(%s)" % search
@@ -1559,15 +1632,28 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         except:
             ids = []
             return ids
+
+        # 将找到的卡片放进动态牌组中。
         # move the cards over
         self.col.log(deck['id'], ids)
         self._moveToDyn(deck['id'], ids)
         return ids
 
     def emptyDyn(self, did, lim=None):
+        """
+        清空动态牌组，将其中的卡片移回到原来的牌组中。
+
+        :param did: 动态牌组ID。
+        :param lim: 限制表达式。
+        :return: 无。
+        """
         if not lim:
             lim = "did = %s" % did
         self.col.log(self.col.db.list("select id from cards where %s" % lim))
+
+        # 卡片牌组ID 还原
+        # 正在学习的卡片放到新卡片队列，并变成新卡片。
+        # 其它卡片是什么类型回什么队列，类型不变。
         # move out of cram queue
         self.col.db.execute("""
 update cards set did = odid, queue = (case when type = 1 then 0
@@ -1576,9 +1662,22 @@ due = odue, odue = 0, odid = 0, usn = ? where %s""" % lim,
                             self.col.usn())
 
     def remFromDyn(self, cids):
+        """
+        将卡片从动态牌组中移回原来的牌组。
+
+        :param cids:卡片ID列表。
+        :return:无
+        """
         self.emptyDyn(None, "id in %s and odid" % ids2str(cids))
 
     def _dynOrder(self, o, l):
+        """
+        根据动态牌组选择卡片的方法和卡片数返回查询语句。
+
+        :param o:选择卡片的方法。
+        :param l:选择卡片的数量。
+        :return:返回查询语句。
+        """
         if o == DYN_OLDEST:
             t = "(select max(id) from revlog where cid=c.id)"
         elif o == DYN_RANDOM:
@@ -1604,18 +1703,37 @@ due = odue, odue = 0, odid = 0, usn = ? where %s""" % lim,
         return t + " limit %d" % l
 
     def _moveToDyn(self, did, ids):
+        """
+        将卡片移动到动态牌组中。
+
+        :param did: 动态牌组的ID。
+        :param ids: 卡片ID列表。
+        :return:无
+        """
         deck = self.col.decks.get(did)
         data = []
-        t = intTime(); u = self.col.usn()
+        t = intTime()
+        u = self.col.usn()
+
+        # 生成data要修改的数据列表，格式为（牌组ID, due, usn, 卡片ID）
+        # due 从 -100000开始，这样所有临时牌组的卡片都是到期的。
         for c, id in enumerate(ids):
             # start at -100000 so that reviews are all due
             data.append((did, -100000+c, u, id))
+
+        # 当卡片类型为复习卡片且到期的卡片放到复习卡片队列，否则放在新卡片队列。
+        #
+        # 到期的：
+        #   odue不为0时，odue <= 当天
+        #   odue为0时，due <= 当天
         # due reviews stay in the review queue. careful: can't use
         # "odid or did", as sqlite converts to boolean
         queue = """
 (case when type=2 and (case when odue then odue <= %d else due <= %d end)
  then 2 else 0 end)"""
         queue %= (self.today, self.today)
+
+        # 将上面的数据写入cards表中。
         self.col.db.executemany("""
 update cards set
 odid = (case when odid then odid else did end),
@@ -1623,7 +1741,7 @@ odue = (case when odue then odue else due end),
 did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
 
     def _dynIvlBoost(self, card):
-        """为临时牌组中的复习卡计算新的间隔天数。"""
+        """为临时牌组中的复习卡片计算新的间隔天数。"""
         assert card.odid and card.type == 2
         assert card.factor
 
@@ -1688,13 +1806,26 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
     ##########################################################################
 
     def _cardConf(self, card):
+        """获取卡片所在牌组的设置。"""
         return self.col.decks.confForDid(card.did)
 
     def _newConf(self, card):
+        """
+        获取卡片的新卡片设置。
+
+        :param card: 卡片。
+        :return: 新卡片的设置。
+        """
+
+        # 获取卡片所在牌组的设置。
         conf = self._cardConf(card)
+
+        # 如果是一般的牌组，直接返回Options/New cards的设置。
         # normal deck
         if not card.odid:
             return conf['new']
+
+        # 对于临时牌组的卡片，则取临时牌组的设置，其余设置使用旧牌组的设置。
         # dynamic deck; override some attributes, use original deck for others
         oconf = self.col.decks.confForDid(card.odid)
         delays = conf['delays'] or oconf['new']['delays']
@@ -1711,10 +1842,20 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
         )
 
     def _lapseConf(self, card):
+        """
+        获取卡片的遗忘设置。
+
+        :param card: 卡片。
+        :return: 遗忘设置。
+        """
         conf = self._cardConf(card)
+
+        # 如果是一般的牌组，直接返回Options/Lapse的设置。
         # normal deck
         if not card.odid:
             return conf['lapse']
+
+        # 对于临时牌组的卡片，则取临时牌组的设置，其余设置使用旧牌组的设置。
         # dynamic deck; override some attributes, use original deck for others
         oconf = self.col.decks.confForDid(card.odid)
         delays = conf['delays'] or oconf['lapse']['delays']
@@ -1730,14 +1871,25 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
         )
 
     def _revConf(self, card):
+        """
+        获取卡片的复习设置。
+
+        :param card: 卡片。
+        :return: 返回复习设置。
+        """
         conf = self._cardConf(card)
+
+        # 如果是一般的牌组，直接返回Options/Reviews的设置。
         # normal deck
         if not card.odid:
             return conf['rev']
+
+        # 对于临时牌组的卡片，则使用旧牌组的复习设置，也就是Options/Reviews设置。
         # dynamic deck
         return self.col.decks.confForDid(card.odid)['rev']
 
     def _deckLimit(self):
+        """获取活动牌组ID列表。"""
         return ids2str(self.col.decks.active())
 
     def _resched(self, card):
@@ -1766,13 +1918,24 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
     ##########################################################################
 
     def _updateCutoff(self):
+        """更新当日截止时间，出现跨日期的情况时清零日内计数，还原被搁置的卡片。"""
+
+        # 保存today旧值
         oldToday = self.today
+
+        # 重新计算today：从牌组集创建到现在,共有多少天。
         # days since col created
         self.today = int((time.time() - self.col.crt) // 86400)
+
+        # 当天截止时间。
         # end of day cutoff
         self.dayCutoff = self.col.crt + (self.today+1)*86400
+
+        # 跨天
         if oldToday != self.today:
             self.col.log(self.today, self.dayCutoff)
+
+        # 如果跨日，清零所有牌组的日内计数。
         # update all daily counts, but don't save decks to prevent needless
         # conflicts. we'll save on card answer instead
         def update(g):
@@ -1782,6 +1945,8 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
                     g[key] = [self.today, 0]
         for deck in self.col.decks.all():
             update(deck)
+
+        # 如果跨日，还原所有被搁置的卡。
         # unbury if the day has rolled over
         unburied = self.col.conf.get("lastUnburied", 0)
         if unburied < self.today:
@@ -1798,12 +1963,15 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
     ##########################################################################
 
     def finishedMsg(self):
+        """返回当日完成所有事情时的html文本。"""
         return ("<b>"+_(
             "Congratulations! You have finished this deck for now.")+
             "</b><br><br>" + self._nextDueMsg())
 
     def _nextDueMsg(self):
         line = []
+
+        # 通知用户已经达到复习卡片数量限制，但还有到期的卡片需要复习。
         # the new line replacements are so we don't break translations
         # in a point release
         if self.revDue():
@@ -1811,6 +1979,7 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
 Today's review limit has been reached, but there are still cards
 waiting to be reviewed. For optimum memory, consider increasing
 the daily limit in the options.""").replace("\n", " "))
+        # 通知用户已经达到新卡片数量限制，但还有到新卡片可用。
         if self.newDue():
             line.append(_("""\
 There are more new cards available, but the daily limit has been
@@ -1830,6 +1999,7 @@ To study outside of the normal schedule, click the Custom Study button below."""
         return "<p>".join(line)
 
     def revDue(self):
+        """活动牌组中的复习队列中还有到期的卡片时返回True。"""
         "True if there are any rev cards due."
         return self.col.db.scalar(
             ("select 1 from cards where did in %s and queue = 2 "
@@ -1837,12 +2007,14 @@ To study outside of the normal schedule, click the Custom Study button below."""
             self.today)
 
     def newDue(self):
+        """活动牌组中的新卡片队列中还有卡片时返回True。"""
         "True if there are any new cards due."
         return self.col.db.scalar(
             ("select 1 from cards where did in %s and queue = 0 "
              "limit 1") % self._deckLimit())
 
     def haveBuried(self):
+        """活动牌组中的搁置队列中还有卡片时返回True。"""
         sdids = ids2str(self.col.decks.active())
         cnt = self.col.db.scalar(
             "select 1 from cards where queue = -2 and did in %s limit 1" % sdids)
@@ -1957,7 +2129,7 @@ update cards set queue=-2,mod=?,usn=? where id in """+ids2str(cids),
         # 和复习卡片队列中且已经到期的兄弟卡片。
         # 兄弟卡片是指同一个笔记下的其它卡片。
         # 将这些卡片从排期器的新卡片队列_newQueue或复习卡片队列_revQueue中移除。
-        # 同时修改cards表将这些卡片在记录在“用户隐藏的”卡片队列中。
+        # 同时修改cards表将这些卡片在移动到搁置卡片队列中。
 
         # loop through and remove from queues
         for cid,queue in self.col.db.execute("""
@@ -1991,11 +2163,22 @@ and (queue=0 or (queue=2 and due<=?))""",
     ##########################################################################
 
     def forgetCards(self, ids):
+        """
+        将卡片放回的新卡片队列的最后。
+
+        :param ids:卡片ID列表。
+        :return:
+        """
         "Put cards at the end of the new queue."
+        # 将卡片从动态牌组中移回原来的牌组。
         self.remFromDyn(ids)
+
+        # 设置卡片类型为新卡片，新卡片队列，相关调度数据片复位。
         self.col.db.execute(
             "update cards set type=0,queue=0,ivl=0,due=0,odue=0,factor=?"
             " where id in "+ids2str(ids), STARTING_FACTOR)
+
+        # 将这些卡片放在新卡片的最后。
         pmax = self.col.db.scalar(
             "select max(due) from cards where type=0") or 0
         # takes care of mod + usn
@@ -2038,6 +2221,17 @@ usn=:usn,mod=:mod,factor=:fact where id=:id""",
     ##########################################################################
 
     def sortCards(self, cids, start=1, step=1, shuffle=False, shift=False):
+        """
+        新卡片排序。
+
+        :param cids: 要排序的卡片ID列表
+        :param start: due的开始值
+        :param step: due的步长
+        :param shuffle: 是否打乱顺序
+        :param shift: 在原有卡片之间插入，会改变插入点后面卡片的due。
+        :return:
+        """
+        # 找出这些卡片的笔记ID到nids
         scids = ids2str(cids)
         now = intTime()
         nids = []
@@ -2050,6 +2244,8 @@ usn=:usn,mod=:mod,factor=:fact where id=:id""",
         if not nids:
             # no new cards
             return
+
+        # 确定卡片的顺序：随机或按笔记的ID顺序
         # determine nid ordering
         due = {}
         if shuffle:
@@ -2057,17 +2253,23 @@ usn=:usn,mod=:mod,factor=:fact where id=:id""",
         for c, nid in enumerate(nids):
             due[nid] = start+c*step
         high = start+c*step
+
+        # 在原有卡片之间插入。
         # shift?
         if shift:
+            # 找出插入位置low
             low = self.col.db.scalar(
                 "select min(due) from cards where due >= ? and type = 0 "
                 "and id not in %s" % scids,
                 start)
             if low is not None:
+                # 插入位置后面的卡片due往后移动
                 shiftby = high - low + 1
                 self.col.db.execute("""
 update cards set mod=?, usn=?, due=due+? where id not in %s
 and due >= ? and queue = 0""" % scids, now, self.col.usn(), shiftby, low)
+
+        # 将这些卡片改到正确的位置，即due值。
         # reorder cards
         d = []
         for id, nid in self.col.db.execute(
