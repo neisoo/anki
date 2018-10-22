@@ -44,6 +44,13 @@ from anki.consts import *
 class Card:
 
     def __init__(self, col, id=None):
+        """
+        初始化。
+
+        :param col: 卡片所在的牌组集
+        :param id: 卡片ID，不为空时从数据库中加载卡片的数据，否则初始化为空卡。
+        """
+        """"""
         self.col = col
         self.timerStarted = None
         self._qa = None
@@ -69,6 +76,7 @@ class Card:
             self.data = ""
 
     def load(self):
+        """从数据库中加载卡片数据。"""
         (self.id,
          self.nid,
          self.did,
@@ -92,6 +100,8 @@ class Card:
         self._note = None
 
     def flush(self):
+        """卡片数据回存到数据库。"""
+
         self.mod = intTime()
         self.usn = self.col.usn()
         # bug check
@@ -140,17 +150,30 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
         self.col.log(self)
 
     def q(self, reload=False, browser=False):
+        """返回卡片的问题的html代码。"""
         return self.css() + self._getQA(reload, browser)['q']
 
     def a(self):
+        """返回卡片的答案的html代码。"""
         return self.css() + self._getQA()['a']
 
     def css(self):
+        """返回卡片的css代码。"""
         return "<style>%s</style>" % self.model()['css']
 
     def _getQA(self, reload=False, browser=False):
+        """
+        获取卡片的问题和答案。
+
+        :param reload: True=重新生成数据，
+        :param browser: Ture=用于浏览。
+        :return: 返回卡片的问题和答案。
+        """
         if not self._qa or reload:
-            f = self.note(reload); m = self.model(); t = self.template()
+            # 获取笔记
+            f = self.note(reload)
+            m = self.model()
+            t = self.template()
             data = [self.id, f.id, m['id'], self.odid or self.did, self.ord,
                     f.stringTags(), f.joinedFields()]
             if browser:
@@ -161,14 +184,27 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
         return self._qa
 
     def note(self, reload=False):
+        """
+        获取卡片所属的笔记。
+
+        :param reload: True=重新加载。
+        :return:  返回卡片所属的笔记。
+        """
         if not self._note or reload:
             self._note = self.col.getNote(self.nid)
         return self._note
 
     def model(self):
+        """获取卡片所属笔记的笔记类型。"""
         return self.col.models.get(self.note().mid)
 
     def template(self):
+        """
+        获取卡片的模板。
+
+        一些内置的笔记类型
+        :return:
+        """
         m = self.model()
         if m['type'] == MODEL_STD:
             return self.model()['tmpls'][self.ord]
@@ -176,29 +212,46 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
             return self.model()['tmpls'][0]
 
     def startTimer(self):
+        """开始计时。"""
         self.timerStarted = time.time()
 
     def timeLimit(self):
+        """
+        获取回答卡片最大的有效时长，以毫秒为单位。
+
+        避免用户有事离开，而导到回答卡片的时间太长。
+        在Options/General/Ignore answer time long than xxx seconds中设置。
+        默认为60秒，表示回答卡片的时间超过60秒，按60秒计。
+        """
         "Time limit for answering in milliseconds."
         conf = self.col.decks.confForDid(self.odid or self.did)
         return conf['maxTaken']*1000
 
     def shouldShowTimer(self):
+        """
+        是否在回答时显示计时器。
+
+        在Options/General/Show answer timer中设置。
+        """
         conf = self.col.decks.confForDid(self.odid or self.did)
         return conf['timer']
 
     def timeTaken(self):
+        """返回回答卡片耗费的时间，以毫秒为单位。"""
+
         "Time taken to answer card, in integer MS."
         total = int((time.time() - self.timerStarted)*1000)
         return min(total, self.timeLimit())
 
     def isEmpty(self):
+        #？
         ords = self.col.models.availOrds(
             self.model(), joinFields(self.note().fields))
         if self.ord not in ords:
             return True
 
     def __repr__(self):
+        """返回可打印的对像字符串。"""
         d = dict(self.__dict__)
         # remove non-useful elements
         del d['_note']
@@ -208,8 +261,16 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
         return pprint.pformat(d, width=300)
 
     def userFlag(self):
+        """返回用户标记。"""
         return self.flags & 0b111
 
     def setUserFlag(self, flag):
+        """
+        设置用户标记。
+
+        在卡片浏览界面的右键菜单flag中设置。
+        :param flag: 标记值。
+        :return: 无
+        """
         assert 0 <= flag <= 7
         self.flags = (self.flags & ~0b111) | flag

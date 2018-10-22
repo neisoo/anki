@@ -261,6 +261,7 @@ def _incGuid(guid):
 ##############################################################################
 
 def joinFields(list):
+    """用\x1f字符连接列表中的元素，并返回列表的字符串。"""
     return "\x1f".join(list)
 
 def splitFields(string):

@@ -18,6 +18,44 @@ from anki.hooks import runHook
 # revlog types: 0=lrn, 1=rev, 2=relrn, 3=cram
 # positive revlog intervals are in days (rev), negative in seconds (lrn)
 
+#
+# 卡片有三类类型：0 新卡片：没有学习过的卡片。
+#                 1 正在学习卡片：正在执行每个学习步骤的卡片，来源于的新卡片，
+#                                  或者复习时回答1表示遗忘的复习卡片。
+#                 2 复习卡片：完成所有学习步骤的卡片。到达指定日期后显示给用户复习。
+#
+# 卡片记录了自己所属的队列，一共有5种：
+#  0 新卡片队列：
+#   当新增一个卡片时，默认放入这个队列中。队列中卡片都还没有学习过，
+#   调度器会从这个队列中抽取一些到期的卡片进行学习。
+#
+#  1 学习卡片队列：
+#   调度器抽取到新卡片后，会把这些卡片移到这队列中。或者复习卡片队列中的卡片在
+#   回答Again表示遗忘后，也移到这个队列中重新学习。
+#
+#  2 复习卡片队列：
+#   当学习卡片队列中的卡片完成所有学习步骤后，或者回答Easy直接完成学习后，
+#   调度器将这些卡片移到这个队列，并设置初始的到期日。当卡片到期后，调度器从
+#   这个队列抽取卡片进行复习。
+#
+#  3 日学习卡片队列：
+#   当天无法完成所在学习步骤，而被安排进明天的学习的卡片。
+#
+#  -1 休眠卡片队列：
+#   这个队列中的卡片不会被调度。
+#
+#  -2 搁置卡片队列：同一个笔记下的卡片，由于内容相近，所以当其中一张卡片被抽出来学习或复习时，
+#                   为了避免互相干扰，通常不希望其它兄弟卡片在同一天的学习或复习中出现。
+#                   这时调度器会将兄弟卡片移到这个队列中，到明天再学习或复习。
+#
+# 调度器内部维护了三种的队列：
+#   0 新卡片队列：从活动牌组中抽取出的已经到期的新卡片，作为当天要学习的卡片。
+#   1 学习卡片队列：正在学习的卡片。
+#   2 复习队列：从活动牌组中抽取出的已经到期的复习卡片，作为当天的复习的卡片。
+#
+# 调度器抽取的新卡片和复习卡片的数量会根据到牌组和父牌组设置的数量进行限制。
+#
+
 class Scheduler:
     name = "std"
     haveCustomStudy = True
@@ -152,7 +190,7 @@ class Scheduler:
         # 更新卡片修改时间
         card.mod = intTime()
 
-        # ？
+        # 牌组集的唯一串号。
         card.usn = self.col.usn()
 
         # 回存和卡片的调度有关的数据。
@@ -238,7 +276,7 @@ order by due""" % self._deckLimit(),
 
     def unburyCards(self):
         """
-        取消所有被搁置的卡片
+        还原所有被搁置的卡片
 
         查找cards表中所有在搁置队列中的卡片，将其放回卡片类型对应的队列中。
         """
@@ -955,7 +993,7 @@ did = ? and queue = 3 and due <= ? limit ?""",
             if card.due < self.dayCutoff:
                 # 到期时间没超过今天的截止范围
 
-                # ？
+                # 累加学习计数
                 self.lrnCount += card.left // 1000
 
                 # if the queue is not empty and there's nothing else to do, make
@@ -983,7 +1021,14 @@ did = ? and queue = 3 and due <= ? limit ?""",
         self._logLrn(card, ease, conf, leaving, type, lastLeft)
 
     def _delayForGrade(self, conf, left):
-        """返回某一步的间隔时长，以秒为单位。"""
+        """
+        返回某一学习步骤的间隔时长，以秒为单位。
+
+        :param conf: 配置，需要其中的Delays设置。
+        :param left: 剩余步数。
+        :return: 返回当前步骤的时间隔。
+        """
+        """"""
 
         left = left % 1000
         try:
@@ -1160,7 +1205,7 @@ did = ? and queue = 3 and due <= ? limit ?""",
 
     def removeLrn(self, ids=None):
         """
-        将正在学习的卡片发还到它们原来的队列中。。
+        将正在学习的卡片发还到它们原来的队列中。
 
         :param ids:要发还的卡片ID，如果为空表示所有正在学习的卡片。
         :return:无
@@ -1979,13 +2024,14 @@ did = ?, queue = %s, due = ?, usn = ? where id = ?""" % queue, data)
 Today's review limit has been reached, but there are still cards
 waiting to be reviewed. For optimum memory, consider increasing
 the daily limit in the options.""").replace("\n", " "))
-        # 通知用户已经达到新卡片数量限制，但还有到新卡片可用。
+        # 通知用户已经达到新卡片数量限制，但还有新卡片可用。
         if self.newDue():
             line.append(_("""\
 There are more new cards available, but the daily limit has been
 reached. You can increase the limit in the options, but please
 bear in mind that the more new cards you introduce, the higher
 your short-term review workload will become.""").replace("\n", " "))
+        # 提示用户有被搁置的卡。
         if self.haveBuried():
             if self.haveCustomStudy:
                 now = " " +  _("To see them now, click the Unbury button below.")
@@ -1993,6 +2039,8 @@ your short-term review workload will become.""").replace("\n", " "))
                 now = ""
             line.append(_("""\
 Some related or buried cards were delayed until a later session.""")+now)
+        # 当前牌组不是临时牌组时，还会提醒用户可以通过创建临时
+        # 牌组，在正常的学习进度之外进行定制学习。
         if self.haveCustomStudy and not self.col.decks.current()['dyn']:
             line.append(_("""\
 To study outside of the normal schedule, click the Custom Study button below."""))
@@ -2034,46 +2082,93 @@ To study outside of the normal schedule, click the Custom Study button below."""
         return s
 
     def nextIvl(self, card, ease):
+        """
+        当回答一张卡片后，卡片下一次出现的间隔，以秒为单位。
+
+        :param card: 卡片。
+        :param ease: 回答
+        :return: 卡片下一次出现的间隔，以秒为单位 。
+        """
+
         "Return the next interval for CARD, in seconds."
         if card.queue in (0,1,3):
+            # 卡片在新卡片队列、学习队列或日学习队列中时
+            # 返回学习卡片的下一个间隔。
             return self._nextLrnIvl(card, ease)
         elif ease == 1:
+            # 复习队列中的卡片回答遗忘时回到遗忘设置的学习步骤的第一步。
+            # 如果遗忘设置的学习步骤为空时，返回被削减的间隔天数。
             # lapsed
             conf = self._lapseConf(card)
             if conf['delays']:
                 return conf['delays'][0]*60
             return self._nextLapseIvl(card, conf)*86400
         else:
+            # 复习队列中的卡片正常情况下的间隔。
             # review
             return self._nextRevIvl(card, ease)*86400
 
     # this isn't easily extracted from the learn code
     def _nextLrnIvl(self, card, ease):
+        """
+        根据对学习卡片的回答，返回卡片下一次出现的间隔。
+        从_answerLrnCard中提取出来的算法。
+
+        :param card:卡片。
+        :param ease: 回答。
+        :return: 卡片下一次出现的间隔。返回0表示卡片不用排期。
+        """
+
+        # 卡片是新卡片，获取卡片的初始步数。
         if card.queue == 0:
             card.left = self._startingLeft(card)
+
+        # 获取学习配置。
         conf = self._lrnConf(card)
         if ease == 1:
+            # 回答Again时，退回学习的第一步，返回第一步的时间间隔。
             # fail
             return self._delayForGrade(conf, len(conf['delays']))
         elif ease == 3:
+            # 回答Easy时，跳过所有学习步骤，立即完成学习。
             # early removal
             if not self._resched(card):
+                # 不用的排期的卡，返回0。
                 return 0
+
+            # 完成所有学习步骤的第一次排期时的间隔。
             return self._graduatingIvl(card, conf, True, adj=False) * 86400
         else:
+            # 下一个学习步骤。
             left = card.left%1000 - 1
             if left <= 0:
+                # 所有学习步骤完成，完成学习。
                 # graduate
                 if not self._resched(card):
+                    # 不用的排期的卡，返回0。
                     return 0
+
+                # 完成所有学习步骤的第一次排期时的间隔。
                 return self._graduatingIvl(card, conf, False, adj=False) * 86400
             else:
+                # 当前学习步骤的间隔。
                 return self._delayForGrade(conf, left)
 
     # Suspending
     ##########################################################################
 
     def suspendCards(self, ids):
+        """
+        休眠卡片。
+
+        将卡片从动态牌组中发还到原来的牌组。
+        将正在学习的卡片发还到它们原来的队列中。
+        最后将卡片移到休眠卡片队列中。
+
+        :param ids: 要休眠的卡片的ID列表。
+        :return: 无。
+        """
+
         "Suspend cards."
         self.col.log(ids)
         self.remFromDyn(ids)
@@ -2083,6 +2178,13 @@ To study outside of the normal schedule, click the Custom Study button below."""
             ids2str(ids), intTime(), self.col.usn())
 
     def unsuspendCards(self, ids):
+        """
+        撤消卡片的休眠状态。根据卡片的类型，将卡片移动到相应的队列中。
+
+        :param ids: 要休眠的卡片的ID列表。
+        :return: 无。
+        """
+
         "Unsuspend cards."
         self.col.log(ids)
         self.col.db.execute(
@@ -2091,6 +2193,17 @@ To study outside of the normal schedule, click the Custom Study button below."""
             intTime(), self.col.usn())
 
     def buryCards(self, cids):
+        """
+        搁置卡片。
+
+        将卡片从动态牌组中发还到原来的牌组。
+        将正在学习的卡片发还到它们原来的队列中。
+        最后将卡片移到搁置卡片队列中。
+
+        :param ids: 要搁置的卡片的ID列表。
+        :return: 无。
+        """
+
         self.col.log(cids)
         self.remFromDyn(cids)
         self.removeLrn(cids)
@@ -2099,6 +2212,17 @@ update cards set queue=-2,mod=?,usn=? where id in """+ids2str(cids),
                             intTime(), self.col.usn())
 
     def buryNote(self, nid):
+        """
+        搁置一条笔记的所有卡片。
+
+        将卡片从动态牌组中发还到原来的牌组。
+        将正在学习的卡片发还到它们原来的队列中。
+        最后将卡片移到搁置卡片队列中。
+
+        :param ids: 笔记ID。
+        :return: 无。
+        """
+
         "Bury all cards for note until next session."
         cids = self.col.db.list(
             "select id from cards where nid = ? and queue >= 0", nid)
@@ -2109,11 +2233,11 @@ update cards set queue=-2,mod=?,usn=? where id in """+ids2str(cids),
 
     def _burySiblings(self, card):
         """
-        隐藏card的兄弟卡片（同一笔记下的其它卡片）。
+        搁置card的兄弟卡片（同一笔记下的其它卡片）。
 
         详细查看文档的Siblings and Burying小节。
-        :param card:卡片
-        :return:无
+        :param card: 卡片。
+        :return: 无。
         """
         toBury = []
 
@@ -2164,16 +2288,17 @@ and (queue=0 or (queue=2 and due<=?))""",
 
     def forgetCards(self, ids):
         """
-        将卡片放回的新卡片队列的最后。
+        将卡片设置成新卡片并放回的新卡片队列的最后。
 
         :param ids:卡片ID列表。
-        :return:
+        :return: 无。
         """
+
         "Put cards at the end of the new queue."
         # 将卡片从动态牌组中移回原来的牌组。
         self.remFromDyn(ids)
 
-        # 设置卡片类型为新卡片，新卡片队列，相关调度数据片复位。
+        # 设置卡片类型为新卡片，新卡片队列，相关调度数据复位。
         self.col.db.execute(
             "update cards set type=0,queue=0,ivl=0,due=0,odue=0,factor=?"
             " where id in "+ids2str(ids), STARTING_FACTOR)
@@ -2186,6 +2311,15 @@ and (queue=0 or (queue=2 and due<=?))""",
         self.col.log(ids)
 
     def reschedCards(self, ids, imin, imax):
+        """
+        将卡片放入复习队列中，使用新的间隔天数（最小值和最大值）。
+
+        :param ids: 卡片的ID列表。
+        :param imin: 最小间隔天数。
+        :param imax: 最大间隔天数。
+        :return: 无。
+        """
+
         "Put cards in review queue with a new interval in days (min, max)."
         d = []
         t = self.today
@@ -2202,17 +2336,30 @@ usn=:usn,mod=:mod,factor=:fact where id=:id""",
         self.col.log(ids)
 
     def resetCards(self, ids):
+        """
+        完全复位卡片用于导出。
+
+        :param ids: 卡片ID列表。
+        :return: 无。
+        """
+
         "Completely reset cards for export."
         sids = ids2str(ids)
+
+        # 找出这些卡片中不是新卡片的卡片。
         # we want to avoid resetting due number of existing new cards on export
         nonNew = self.col.db.list(
             "select id from cards where id in %s and (queue != 0 or type != 0)"
             % sids)
+
+        # 重置所有卡片。
         # reset all cards
         self.col.db.execute(
             "update cards set reps=0,lapses=0,odid=0,odue=0,queue=0"
             " where id in %s" % sids
         )
+
+        # 非新卡片全部设置回新卡片。
         # and forget any non-new cards, changing their due numbers
         self.forgetCards(nonNew)
         self.col.log(ids)
@@ -2279,14 +2426,33 @@ and due >= ? and queue = 0""" % scids, now, self.col.usn(), shiftby, low)
             "update cards set due=:due,mod=:now,usn=:usn where id = :cid", d)
 
     def randomizeCards(self, did):
+        """
+        对did牌组中的所有新卡片打乱顺序。
+
+        :param did: 牌组ID。
+        :return: 无。
+        """
+
         cids = self.col.db.list("select id from cards where did = ?", did)
         self.sortCards(cids, shuffle=True)
 
     def orderCards(self, did):
+        """
+        对did牌组中的所有新卡片排序。
+
+        :param did: 牌组ID。
+        :return: 无。
+        """
         cids = self.col.db.list("select id from cards where did = ? order by id", did)
         self.sortCards(cids)
 
     def resortConf(self, conf):
+        """
+        找出所有使用conf配置的牌组，根据配置中的设置对牌组中的新卡片排序。
+
+        :param conf: 配置。
+        :return: 无。
+        """
         for did in self.col.decks.didsForConf(conf):
             if conf['new']['order'] == 0:
                 self.randomizeCards(did)
@@ -2295,6 +2461,7 @@ and due >= ? and queue = 0""" % scids, now, self.col.usn(), shiftby, low)
 
     # for post-import
     def maybeRandomizeDeck(self, did=None):
+        """检查Options/New cards/Order设置，是否需要打乱牌组中新卡片的顺序，如果要则打乱牌组中新卡片的顺序"""
         if not did:
             did = self.col.decks.selected()
         conf = self.col.decks.confForDid(did)
