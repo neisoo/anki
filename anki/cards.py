@@ -19,29 +19,45 @@ from anki.consts import *
 # - rev queue: integer day
 # - lrn queue: integer timestamp
 #
-# type: 卡片的类型，0=新卡片队列(new)，1=正在学习的卡片，2=等待复习的卡片
-# queue：卡片所在的队列，除了上面三个同名队列，
-#        0=新卡片队列，1=正在学习的卡片队列，2=等待复习的卡片队列
-#        3=日学习队列（当前学习步骤的间隔时间超出当天截止时间时，放到此队列中。）
-#        另外还有：
-#        -1=暂停的卡片队列，-2=用户隐藏的卡片队列，-3=调用隐藏的卡片队列
-# due 在不同的队列中有不同的用法
-# - 新卡片队列中：笔记id或随机整数，用于按添加顺序或随机顺序抽取新卡片来学习
-# - 等待复习的卡片队列中：整型日期
-# - 学习队列中：整型时间戳
+# 卡片内的字段说明：
+# type:
+#   卡片的类型包括：
+#       0 = 新卡片，创建后还没有学习过的卡片。
+#       1 = 正在学习的卡片。
+#       2 = 等待复习的卡片。
+#
+# queue：
+#   卡片所在的队列，除了上面三个同名队列，还有：
+#       0=新卡片队列，1=正在学习的卡片队列，2=等待复习的卡片队列
+#       3=日学习队列（当前学习步骤的间隔时间超出当天截止时间时，放到此队列中。）
+#       -1=休眠的卡片队列，-2=搁置的卡片队列。
+#
+# due：
+#   在不同的队列中有不同的用法
+#       - 新卡片队列中：笔记id或随机整数，用于按添加顺序或随机顺序抽取新卡片来学习
+#       - 等待复习的卡片队列中：整型日期，下一次复习时的日期。
+#       - 学习队列中：整型时间戳
+#
 # reps：卡片的重复（回答）次数
 # did: 卡片的牌组(deck) ID
 # inv: 距下一次复习的间隔天数
-# due: 下一次复习时的日期（卡片类型为等待复习的卡片时）
-# factor：排期因子，
-#         一张新卡片学习完成后，每一次进入复习卡片时，值为Options/New cards/Starting ease的值。
-#         默认为250%，比较上一次复习间隔为10天，那么下一次的间隔时间就为10*250%100=25天。
-#
+# factor：排期倍数，
+#   一张新卡片学习完成后，每一次进入复习卡片时，值为Options/New cards/Starting ease的值。
+#   默认为250%，比如上一次复习间隔为10天，那么下一次的间隔时间就为10*(250%100)=25天。
 # odue: old due 卡片加入临时牌组前的复习日期
 # odid: old deck id 卡片加入临时牌组前所在的牌组
-# mod：卡片最后一次修改时间
+# mod：卡片最后一次修改的时间戳
+# ord：卡片的卡片模板索引。卡片使用笔记类型中的哪一个的卡片模板。
+# col: 卡片所属的牌组集。
+# timerStarted: 用户开始回答卡片的开始计时。
+# id: 卡片ID。
+# lapses：遗忘次数计数，用户对卡片回答Again的次数。
+# left：卡片当前的所处的学习步骤。低三位为剩余步数，其余高位为从现在到当天截止前可以完成的步数。
+# flags: 卡片的标记。
+# data: 数据库中保存的内容。
 
 class Card:
+    """卡片类"""
 
     def __init__(self, col, id=None):
         """
@@ -50,7 +66,7 @@ class Card:
         :param col: 卡片所在的牌组集
         :param id: 卡片ID，不为空时从数据库中加载卡片的数据，否则初始化为空卡。
         """
-        """"""
+
         self.col = col
         self.timerStarted = None
         self._qa = None
@@ -167,19 +183,23 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
 
         :param reload: True=重新生成数据，
         :param browser: Ture=用于浏览。
-        :return: 返回卡片的问题和答案。
+        :return: 返回卡片的问题和答案的html代码。
         """
         if not self._qa or reload:
-            # 获取笔记
+            # 获取笔记、笔记类型、模板。
             f = self.note(reload)
             m = self.model()
             t = self.template()
+
+            # 构造参数：卡片ID、笔记ID、牌组ID、卡片模板索引、笔记的标签、笔记的字段。
             data = [self.id, f.id, m['id'], self.odid or self.did, self.ord,
                     f.stringTags(), f.joinedFields()]
             if browser:
                 args = (t.get('bqfmt'), t.get('bafmt'))
             else:
                 args = tuple()
+
+            # 返回卡片的问题和答案的html字串。
             self._qa = self.col._renderQA(data, *args)
         return self._qa
 
@@ -200,15 +220,24 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
 
     def template(self):
         """
-        获取卡片的模板。
+        获取卡片使用的卡片模板。
 
-        一些内置的笔记类型
-        :return:
+        笔记类型有两种类型：
+            - 正反型MODEL_STD，可以有多个卡片模板。
+            - 填空型MODEL_CLOZE，只有一个卡片模板。
+
+        用户在卡片浏览界面通过Cards...按钮可以管理卡片模板。
+
+        :return: 无。
         """
         m = self.model()
         if m['type'] == MODEL_STD:
+            # 正反型的笔记类型，可以有多个卡片模板。
+            # 所以根据模板索引返回相应的卡片模板。
             return self.model()['tmpls'][self.ord]
         else:
+            # 填空型的笔记类型，只能有一个卡片模板。
+            # 所以直接返回['tmpls'][0]。
             return self.model()['tmpls'][0]
 
     def startTimer(self):

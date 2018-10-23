@@ -36,6 +36,7 @@ class TagManager:
     #############################################################
 
     def register(self, tags, usn=None):
+        """给定一个标签列表，将其中自己缺少的标签添加进来。"""
         "Given a list of tags, add any missing ones to tag registry."
         found = False
         for t in tags:
@@ -126,6 +127,7 @@ class TagManager:
         return [t for t in tags.replace('\u3000', ' ').split(" ") if t]
 
     def join(self, tags):
+        """将标签列表合并成一个单一的字符串，标签用空格分隔，并以空格开始和结束。"""
         "Join tags into a single string, with leading and trailing spaces."
         if not tags:
             return ""
@@ -160,9 +162,19 @@ class TagManager:
     ##########################################################################
 
     def canonify(self, tagList):
+        """
+        获取规范化后的标签列表。
+
+        生成标签列表的副本，副本经过排序，且如果标签列表中的标签已经存在，
+        就用已经存在的标签替换。
+        :param tagList: 标签列表
+        :return: 获取规范化后的标签列表。
+        """
+
         "Strip duplicates, adjust case to match existing tags, and sort."
         strippedTags = []
         for t in tagList:
+            # 去掉双引号和单引号。
             s = re.sub("[\"']", "", t)
             for existingTag in self.tags:
                 if s.lower() == existingTag.lower():
