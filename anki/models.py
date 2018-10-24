@@ -70,26 +70,54 @@ defaultTemplate = {
 }
 
 class ModelManager:
+    """
+    笔记类型管理类。
+
+    管理牌组集中所有的笔记类型，每一个笔记类型都用json字串来表示。一个牌组集的所有笔记类型
+    全部保存在col表的models字段中。
+    """
 
     # Saving/loading registry
     #############################################################
 
     def __init__(self, col):
+        """
+        初始化。
+
+        :param col: 牌组集。
+        """
         self.col = col
 
     def load(self, json_):
+        """
+        从 json格式的字串中加载数据。
+
+        :param json_: json字符串。
+        :return:
+        """
+
         "Load registry from JSON."
         self.changed = False
         self.models = json.loads(json_)
 
     def save(self, m=None, templates=False):
+        """
+        保存数据到数据库中。
+
+        :param m: 要保存的笔记类型。
+        :param templates:
+        :return:
+        """
         "Mark M modified if provided, and schedule registry flush."
         if m and m['id']:
+            # 更新修改时间和串号。
             m['mod'] = intTime()
             m['usn'] = self.col.usn()
             self._updateRequired(m)
             if templates:
                 self._syncTemplates(m)
+
+        # 内容已经变化。
         self.changed = True
         runHook("newModel")
 
@@ -230,6 +258,7 @@ and notes.mid = ? and cards.ord = ?""", m['id'], ord)
         return f
 
     def fieldMap(self, m):
+        """返回图结构的字段数据。字段名为key，内容是这个字段的索引和数据。"""
         "Mapping of field name -> (ord, field)."
         return dict((f['name'], (f['ord'], f)) for f in m['flds'])
 
@@ -406,6 +435,7 @@ select id from notes where mid = ?)""" % " ".join(map),
                              self.col.usn(), intTime(), m['id'])
 
     def _syncTemplates(self, m):
+        """为使用笔记类型m的所有笔记重新根据卡片模板生成卡片。"""
         rem = self.col.genCards(self.nids(m))
 
     # Model changing
@@ -484,17 +514,38 @@ select id from notes where mid = ?)""" % " ".join(map),
     ##########################################################################
 
     def _updateRequired(self, m):
+        """更新笔记类型中所有的卡片模板与字段之间的依赖关系"""
+
+        # 填空型的笔记类型不需要依赖关系。
         if m['type'] == MODEL_CLOZE:
             # nothing to do
             return
+
+        # 遍历笔记类型中的所有卡片模板。
         req = []
         flds = [f['name'] for f in m['flds']]
         for t in m['tmpls']:
+            # 获得这个卡片模板和字段之间的依赖关系。
             ret = self._reqForTemplate(m, flds, t)
             req.append((t['ord'], ret[0], ret[1]))
         m['req'] = req
 
     def _reqForTemplate(self, m, flds, t):
+        """
+        当使用笔记类型m的卡片模板t时，卡片的问题与每个字段的依赖关系。
+
+        :param m: 笔记类型。
+        :param flds: 笔记类型中定义的所有字段名。
+        :param t: 笔记类型中的某个卡片模板。
+        :return:
+                    1. 所有字段都不影响卡片的问题时，返回："none", [], []；？多了一个[]
+                    2. 有必填字段时返回：'all', [必填字段的索引列表]；
+                    3. 至少要有一个这样的字段时返回：'any', [任选字段的索引列表]。
+        """
+
+        # 测试全部字段不为空时的问题full和全部字段都为空时的问题empty。
+        # 如果两种情况下的问题完全相同，说明模板完全没有依赖的字段，
+        # 这里判定卡片模板无效。返回 "none", [], []。
         a = []
         b = []
         for f in flds:
@@ -508,6 +559,10 @@ select id from notes where mid = ?)""" % " ".join(map),
         # no way to satisfy it
         if full == empty:
             return "none", [], []
+
+        # 测试每一个字段：当这个字段为空，而其它字段不为空时，
+        # 如果所有字段的内容都不出现在问题中时，说明这个字段的必填的。
+        # 当这样的字段存在时，返回 'all', [必填字段的索引]。
         type = 'all'
         req = []
         for i in range(len(flds)):
@@ -519,6 +574,11 @@ select id from notes where mid = ?)""" % " ".join(map),
                 req.append(i)
         if req:
             return type, req
+
+        # 测试每一个字段：当这个字段不为空，而其它字段都为空时，
+        # 如果问题不为‘空’，说明这个字段可以不让问题为‘空’。
+        # 说明至少要有一个这样的字段才能让问题不为‘空’。
+        # 当这样的字段存在时，返回 'any', [任选字段的索引]。
         # if there are no required fields, switch to any mode
         type = 'any'
         req = []
@@ -532,6 +592,8 @@ select id from notes where mid = ?)""" % " ".join(map),
         return type, req
 
     def availOrds(self, m, flds):
+        """给出字段数据，找出笔记类型中可用的卡片模板。"""
+
         "Given a joined field string, return available template ordinals."
         if m['type'] == MODEL_CLOZE:
             return self._availClozeOrds(m, flds)
@@ -566,22 +628,39 @@ select id from notes where mid = ?)""" % " ".join(map),
         return avail
 
     def _availClozeOrds(self, m, flds, allowEmpty=True):
+        """
+        针对填空型的笔记类型，给出字段内容， 找出可用的卡片模板。
+        :param m: 填空型的笔记类型。
+        :param flds: 字段内容。
+        :param allowEmpty: 是否充许
+        :return: 返回可用的卡片模板列表。
+        """
         sflds = splitFields(flds)
         map = self.fieldMap(m)
         ords = set()
+
+        # 从卡片模板的问题模板查找{{cloze:字段名}}和<%cloze:字段名%>出现的位置。
+        # 这些字段是需要识别类似{{c1::1913}}这样的填空。
         matches = re.findall("{{[^}]*?cloze:(?:[^}]?:)*(.+?)}}", m['tmpls'][0]['qfmt'])
         matches += re.findall("<%cloze:(.+?)%>", m['tmpls'][0]['qfmt'])
         for fname in matches:
             if fname not in map:
                 continue
             ord = map[fname][0]
+            # 找出c1，c2,...中所有的数字，追加到ords集合中。
             ords.update([int(m)-1 for m in re.findall(
                 "(?s){{c(\d+)::.+?}}", sflds[ord])])
+        # 去掉不合法的数字。
         if -1 in ords:
             ords.remove(-1)
         if not ords and allowEmpty:
             # empty clozes use first ord
             return [0]
+
+        # ords列表中有几个数字，就有几个卡片。
+        # 例如当ords=(0,1,3),表示所有有填空的字段中一共出现过c1，c2和c4。
+        # 这样就要有三张卡片分别对c1，c2，c4填空进行提问，相当于有三个模板，
+        # 虽然实际上只有一个卡片模板。
         return list(ords)
 
     # Sync handling

@@ -181,8 +181,8 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
         """
         获取卡片的问题和答案。
 
-        :param reload: True=重新生成数据，
-        :param browser: Ture=用于浏览。
+        :param reload: True=重新生成html代码，否则使用缓存的代码。
+        :param browser: Ture=用于卡片浏览模式。这时使用卡片模板中的Browser Appearance设置来尽可能简化问题和答案的显示。
         :return: 返回卡片的问题和答案的html代码。
         """
         if not self._qa or reload:
@@ -191,10 +191,11 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
             m = self.model()
             t = self.template()
 
-            # 构造参数：卡片ID、笔记ID、牌组ID、卡片模板索引、笔记的标签、笔记的字段。
+            # 构造参数：卡片ID、笔记ID、笔记类型ID、牌组ID、卡片模板索引、笔记的标签、笔记的字段。
             data = [self.id, f.id, m['id'], self.odid or self.did, self.ord,
                     f.stringTags(), f.joinedFields()]
             if browser:
+                # 读取卡片模板中的Browser Appearance设置来尽可能简化问题和答案的显示。
                 args = (t.get('bqfmt'), t.get('bafmt'))
             else:
                 args = tuple()

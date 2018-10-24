@@ -234,7 +234,12 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
         return self.scm > self.ls
 
     def usn(self):
-        """获取序列号"""
+        """
+        获取序列号
+
+        用于数据同步，表示哪些数据已经上传过，哪些没有。
+        每次完整上传后值加1.
+        """
         return self._usn if self.server else -1
 
     def beforeUpload(self):
@@ -351,41 +356,63 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
         return ok
 
     def genCards(self, nids):
+        """
+        为笔记生成卡片。
+
+        :param nids: 笔记ID列表。
+        :return:
+        """
+
         "Generate cards for non-empty templates, return ids to remove."
         # build map of (nid,ord) so we don't create dupes
         snids = ids2str(nids)
         have = {}
         dids = {}
         dues = {}
+
+        # 遍历这些笔记下的所有卡片。
         for id, nid, ord, did, due, odue, odid in self.db.execute(
             "select id, nid, ord, did, due, odue, odid from cards where nid in "+snids):
+
+            # have中记录？
             # existing cards
             if nid not in have:
                 have[nid] = {}
             have[nid][ord] = id
+
+            # 如果卡片在临时牌组中，那么在原来的牌组中新增卡片。
             # if in a filtered deck, add new cards to original deck
             if odid != 0:
                 did = odid
+
+            # dids记录笔记在哪一个牌组中。
             # and their dids
             if nid in dids:
                 if dids[nid] and dids[nid] != did:
+                    # 如果同一条笔记下的卡片在不同的牌组中出现？
                     # cards are in two or more different decks; revert to
                     # model default
                     dids[nid] = None
             else:
                 # first card or multiple cards in same deck
                 dids[nid] = did
+
+            # dues记录笔记的到期时间。
             # save due
             if odid != 0:
                 due = odue
             if nid not in dues:
                 dues[nid] = due
+
+        # 为每条笔记生成卡片。
         # build cards for each note
         data = []
         ts = maxID(self.db)
         now = intTime()
         rem = []
         usn = self.usn()
+
+        # 遍历所有的笔记。
         for nid, mid, flds in self.db.execute(
             "select id, mid, flds from notes where id in "+snids):
             model = self.models.get(mid)
@@ -557,6 +584,15 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
                 for row in self._qaData(where)]
 
     def _renderQA(self, data, qfmt=None, afmt=None):
+        """
+        生成问题和答案的html代码。
+
+        :param data: 构造参数，格式为：[卡片ID、笔记ID、笔记类型ID、牌组ID、卡片模板索引、笔记的标签、笔记的字段]。
+        :param qfmt: 不为空时，用于替换问题显示格式。
+        :param afmt: 不为空时，用于替换答案显示格式。
+        :return: 返回问题和答案的html代码。
+        """
+
         "Returns hash of id, question, answer."
         # data is [cid, nid, mid, did, ord, tags, flds]
         # unpack fields and create dict
