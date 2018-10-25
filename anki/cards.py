@@ -274,7 +274,12 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
         return min(total, self.timeLimit())
 
     def isEmpty(self):
-        #？
+        """
+        卡片是否为空。
+
+        卡片使用的卡片模板，是否能根据现有的字段，产生有效的卡片问题。
+        """
+
         ords = self.col.models.availOrds(
             self.model(), joinFields(self.note().fields))
         if self.ord not in ords:

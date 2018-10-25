@@ -274,6 +274,13 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
     ##########################################################################
 
     def nextID(self, type, inc=True):
+        """
+        返回下一个ID值。
+
+        :param type: ID的类型。
+        :param inc: True=下一个ID值加1。默认为True。
+        :return: 返回下一个ID值，ID值从1开始。
+        """
         type = "next"+type.capitalize()
         id = self.conf.get(type, 1)
         if inc:
@@ -342,12 +349,31 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
         return self._tmplsFromOrds(model, avail)
 
     def _tmplsFromOrds(self, model, avail):
+        """
+        根据笔记类型model中可用的卡片模板ID列表avail，返回avail的卡片模板列表。
+
+        :param model: 笔记类型
+        :param avail: 卡片模板ID列表
+        :return: 卡片模板列表
+        """
+
         ok = []
         if model['type'] == MODEL_STD:
+            # 标准型的模板类型，根据卡片模板ID索引到卡片模板。
             for t in model['tmpls']:
                 if t['ord'] in avail:
                     ok.append(t)
         else:
+            # 填空型的模板类型，只有一个卡片模板，但有不同的ord。
+            # 这时的ord不表示卡片模板索引，而是表示对卡片模板中的
+            # 哪种{{c数字::文字}}要使用填空功能。
+            #
+            # 例如这时ord=2时，表示要对卡片模板中的所有{{c3::文字}}
+            # 使用填空功能；ord=0时，表示要对卡片模板中的所有
+            # {{c1::文字}}使用填空功能。
+            #
+            # 通过这种方式来"虚拟"出不同的卡片模板。
+
             # cloze - generate temporary templates from first
             for ord in avail:
                 t = copy.copy(model['tmpls'][0])
@@ -357,10 +383,10 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
 
     def genCards(self, nids):
         """
-        为笔记生成卡片。
+        产生笔记下的所有卡片。
 
         :param nids: 笔记ID列表。
-        :return:
+        :return: 返回这些笔记下需要删除的卡片ID列表。
         """
 
         "Generate cards for non-empty templates, return ids to remove."
@@ -374,7 +400,10 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
         for id, nid, ord, did, due, odue, odid in self.db.execute(
             "select id, nid, ord, did, due, odue, odid from cards where nid in "+snids):
 
-            # have中记录？
+            # have[笔记ID][模板ID] = 卡片ID
+            # have记录了：已经存在的这些卡片使用了哪个笔记中的哪个卡片模板。
+            # 这样在后面就可以通过判断have[笔记ID][模板ID]是否存在来检查
+            # 某个笔记中的某个卡片模板是否有对应的卡片。
             # existing cards
             if nid not in have:
                 have[nid] = {}
@@ -385,7 +414,8 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
             if odid != 0:
                 did = odid
 
-            # dids记录笔记在哪一个牌组中。
+            # dids[nid] = None表示笔记nid的所有卡片不在相同牌组中，
+            # 否则都在牌组dids[nid]中。
             # and their dids
             if nid in dids:
                 if dids[nid] and dids[nid] != did:
@@ -397,7 +427,6 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
                 # first card or multiple cards in same deck
                 dids[nid] = did
 
-            # dues记录笔记的到期时间。
             # save due
             if odid != 0:
                 due = odue
@@ -412,17 +441,44 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
         rem = []
         usn = self.usn()
 
-        # 遍历所有的笔记。
+        # 由于这些笔记的字段可能被修改，又或者笔记使用的卡片模板
+        # 被修改，这些修改可能导致字段内容与卡片模板之间的依赖关
+        # 系发生变化，导致笔记中出现一些以前没有但现在需要添加的
+        # 新卡片或者已经存在但现在无效的卡片需要删除的情况。
+        #
+        # 所以遍历这些笔记，做两件事：
+        #  1. 为笔记添加缺少的卡片。
+        #  2. 删除已经存在但现在无效了的卡片。
+        #     注意：出于安全考虑，实际并没有删除，只是记录下了这
+        #     些卡片，但不做任何处理，因为卡片上有排期数据。
+        #     如果用户修改失误，导到某些卡片无效，用户还可以改回来。
+        #     真的删除了卡片，卡片的有排期数据就回不来了。
+        #
         for nid, mid, flds in self.db.execute(
             "select id, mid, flds from notes where id in "+snids):
+
+            # 笔记的笔记类型
             model = self.models.get(mid)
+
+            # 现在可用的卡片模板
             avail = self.models.availOrds(model, flds)
+
+            # 牌组ID，如果这条笔记下的所有卡片都在同一个牌组，就继续用个牌组的ID。
+            # 否则使用笔记类型的所属的牌组ID。
             did = dids.get(nid) or model['did']
+
+            # 到期时间，复制于这条笔记下最先遇到的卡片的到期时间。
             due = dues.get(nid)
+
+            # 遍历这个笔记的可用卡片模板。
             # add any missing cards
             for t in self._tmplsFromOrds(model, avail):
+
+                # 这个笔记的这个卡片模板对应的卡片是否已经存在。
                 doHave = nid in have and t['ord'] in have[nid]
                 if not doHave:
+                    # 不存在，添加这张缺少的卡片，
+                    # 这里先记录加新加卡片的数据，后面在批量添加到数据库中。
                     # check deck is not a cram deck
                     did = t['did'] or did
                     if self.decks.isDyn(did):
@@ -435,15 +491,21 @@ crt=?, mod=?, scm=?, dty=?, usn=?, ls=?, conf=?""",
                     data.append((ts, nid, did, t['ord'],
                                  now, usn, due))
                     ts += 1
+
+            # 记录已经存在但无效了的卡片，需要删除。
             # note any cards that need removing
             if nid in have:
                 for ord, id in list(have[nid].items()):
                     if ord not in avail:
                         rem.append(id)
+
+        # 批量新入新卡片到cards数据表中。
         # bulk update
         self.db.executemany("""
 insert into cards values (?,?,?,?,?,?,0,0,?,0,0,0,0,0,0,0,0,"")""",
                             data)
+
+        # 需要删除的卡片ID列表。
         return rem
 
     # type 0 - when previewing in add dialog, only non-empty
@@ -507,6 +569,13 @@ insert into cards values (?,?,?,?,?,?,0,0,?,0,0,0,0,0,0,0,0,"")""",
         return self.db.scalar("select count() from cards")
 
     def remCards(self, ids, notes=True):
+        """
+        删除卡片。
+
+        :param ids: 卡片的ID列表。
+        :param notes: True=如果笔记下的卡片被全部删除，那么也删除这条笔记。
+        :return: 无。
+        """
         "Bulk delete cards by ID."
         if not ids:
             return
@@ -542,14 +611,27 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
     ##########################################################################
 
     def _fieldData(self, snids):
+        """返回sndis中的笔记的(笔记ID，笔记类型ID，字段内容)列表。"""
         return self.db.execute(
             "select id, mid, flds from notes where id in "+snids)
 
     def updateFieldCache(self, nids):
+        """
+        更新笔记中的用于排序的字段sfld和校验字段csum。
+
+        :param nids: 要更新的笔记ID列表。
+        :return: 无。
+        """
+
         "Update field checksums and sort cache, after find&replace, etc."
         snids = ids2str(nids)
         r = []
+
+        # 遍历snids中的所有笔记。
         for (nid, mid, flds) in self._fieldData(snids):
+
+            # 获取这条笔记的字段内容和排序字段的索引。
+            # 重新计算这条用于排序的sfld内容和校验。
             fields = splitFields(flds)
             model = self.models.get(mid)
             if not model:
@@ -558,6 +640,8 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
             r.append((stripHTMLMedia(fields[self.models.sortIdx(model)]),
                       fieldChecksum(fields[0]),
                       nid))
+
+        # 批量更新notes数据表中的内容。
         # apply, relying on calling code to bump usn+mod
         self.db.executemany("update notes set sfld=?, csum=? where id=?", r)
 
