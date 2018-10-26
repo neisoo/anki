@@ -567,7 +567,7 @@ and notes.mid = ? and cards.ord = ?""", m['id'], ord)
 
         :param m: 笔记类型。
         :param template: 要删除的卡片模板。
-        :return: 如果有孤立的笔记，则返回False。
+        :return: 如果删除模板会产生孤立的笔记，不执行操作并返回False。
         """
 
         "False if removing template would leave orphan notes."
@@ -579,6 +579,9 @@ and notes.mid = ? and cards.ord = ?""", m['id'], ord)
         cids = self.col.db.list("""
 select c.id from cards c, notes f where c.nid=f.id and mid = ? and ord = ?""",
                                  m['id'], ord)
+
+        # 找出使用了这个卡片模板的所有笔记，确保这些笔记只至少要有两张卡，
+        # 才能执行删除操作。笔记中至少要有一张卡片。
         # all notes with this template must have at least two cards, or we
         # could end up creating orphaned notes
         if self.col.db.scalar("""
@@ -588,37 +591,69 @@ group by nid
 having count() < 2
 limit 1""" % ids2str(cids)):
             return False
+
+        # 删除卡片。
         # ok to proceed; remove cards
         self.col.modSchema(check=True)
         self.col.remCards(cids)
+
+        # 调整这些卡片的兄弟卡片中的卡片模板索引。
         # shift ordinals
         self.col.db.execute("""
 update cards set ord = ord - 1, usn = ?, mod = ?
  where nid in (select id from notes where mid = ?) and ord > ?""",
                              self.col.usn(), intTime(), m['id'], ord)
+
+        # 从笔记类型中删除这个卡片模板，并调整笔记类型中其它模板的索引。
         m['tmpls'].remove(template)
         self._updateTemplOrds(m)
+
+        # 应用笔记类型m的改动并标记数据变化。
         self.save(m)
         return True
 
     def _updateTemplOrds(self, m):
+        """按照笔记类型现在的卡片模板顺序更新卡片模板的索引。"""
         for c, t in enumerate(m['tmpls']):
             t['ord'] = c
 
     def moveTemplate(self, m, template, idx):
+        """
+        称动卡片模板到新的位置。
+
+        :param m: 笔记类型。
+        :param template: 要移动的卡片模板。
+        :param idx: 新的位置。
+        :return: 无。
+        """
+
+        # 位置不变，返回。
         oldidx = m['tmpls'].index(template)
         if oldidx == idx:
             return
+
+        # 记录原来的顺序。
         oldidxs = dict((id(t), t['ord']) for t in m['tmpls'])
+
+        # 移动：先删后插。
         m['tmpls'].remove(template)
         m['tmpls'].insert(idx, template)
+
+        # 更新卡片模板内部的内部的索引。
         self._updateTemplOrds(m)
+
+        # 创建一个“原来的卡片模板索引->调整后的卡片模板索引”的修改映射。
         # generate change map
         map = []
         for t in m['tmpls']:
             map.append("when ord = %d then %d" % (oldidxs[id(t)], t['ord']))
+
+        # 应用笔记类型m的改动并标记数据变化。
         # apply
         self.save(m)
+
+        # 修改所有使用这个笔记类型的卡片中的
+        # 卡片模板索引，将其值改为调整后的卡片模板索引值。
         self.col.db.execute("""
 update cards set ord = (case %s end),usn=?,mod=? where nid in (
 select id from notes where mid = ?)""" % " ".join(map),
@@ -634,17 +669,41 @@ select id from notes where mid = ?)""" % " ".join(map),
     # - newModel should be self if model is not changing
 
     def change(self, m, nids, newModel, fmap, cmap):
+        """
+        修改笔记的笔记类型。
+
+        :param m: 原来的笔记类型。
+        :param nids: 要修改笔记类型的笔记ID列表。
+        :param newModel: 新的笔记类型。
+        :param fmap: 新旧字段对应关系。
+        :param cmap: 新旧卡片模板对应关系。
+        :return: 无。
+        """
         self.col.modSchema(check=True)
         assert newModel['id'] == m['id'] or (fmap and cmap)
         if fmap:
+            # 用新的笔记类型来修改笔记。
             self._changeNotes(nids, newModel, fmap)
         if cmap:
+            # 修改笔记下的卡片。
             self._changeCards(nids, m, newModel, cmap)
+
+        # 生成新卡，如果有的话。
         self.col.genCards(nids)
 
     def _changeNotes(self, nids, newModel, map):
+        """
+        用新的笔记类型来修改笔记。
+
+        :param nids: 笔记ID列表。
+        :param newModel: 新的笔记类型。
+        :param map: 新旧字段对应关系。
+        :return: 无
+        """
         d = []
         nfields = len(newModel['flds'])
+
+        # 按新旧字段对应关系，调整所有笔记的字段内容。
         for (nid, flds) in self.col.db.execute(
             "select id, flds from notes where id in "+ids2str(nids)):
             newflds = {}
@@ -659,11 +718,24 @@ select id from notes where mid = ?)""" % " ".join(map),
                       m=intTime(),u=self.col.usn()))
         self.col.db.executemany(
             "update notes set flds=:flds,mid=:mid,mod=:m,usn=:u where id = :nid", d)
+
+        # 更新笔记中的用于排序的字段sfld和校验字段csum。
         self.col.updateFieldCache(nids)
 
     def _changeCards(self, nids, oldModel, newModel, map):
+        """
+        用新的笔记类型来修改笔记下的卡片。
+
+        :param nids: 笔记ID列表。
+        :param oldModel: 原来的笔记类型。
+        :param newModel: 新的笔记类型。
+        :param map: 新旧卡片模板对应关系。
+        :return: 无。
+        """
         d = []
         deleted = []
+
+        # 按新旧卡片模板的对应关系，调整所有卡片的卡片模板索引。
         for (cid, ord) in self.col.db.execute(
             "select id, ord from cards where nid in "+ids2str(nids)):
             # if the src model is a cloze, we ignore the map, as the gui
@@ -686,12 +758,15 @@ select id from notes where mid = ?)""" % " ".join(map),
         self.col.db.executemany(
             "update cards set ord=:new,usn=:u,mod=:m where id=:cid",
             d)
+
+        # 删除不能转换的卡片。
         self.col.remCards(deleted)
 
     # Schema hash
     ##########################################################################
 
     def scmhash(self, m):
+        """返回hash值，用于检查笔记类型是否兼容。"""
         "Return a hash of the schema, to see if models are compatible."
         s = ""
         for f in m['flds']:
@@ -885,6 +960,7 @@ select id from notes where mid = ?)""" % " ".join(map),
     ##########################################################################
 
     def beforeUpload(self):
+        """上传前调用。"""
         for m in self.all():
             m['usn'] = 0
         self.save()
