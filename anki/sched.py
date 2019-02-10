@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import time
@@ -428,9 +428,7 @@ order by due""" % self._deckLimit(),
 
         "Returns [deckname, did, rev, lrn, new]"
         self._checkDay()
-        self.col.decks.recoverOrphans()
-
-        # 获取所有的牌组并按名字排序
+        self.col.decks.checkIntegrity()
         decks = self.col.decks.all()
         decks.sort(key=itemgetter('name'))
         lims = {}
@@ -444,35 +442,14 @@ order by due""" % self._deckLimit(),
             parts = parts[:-1]
             return "::".join(parts)
 
-        # 按名字顺序，遍历牌组。
+        # 遍历牌组。
         for deck in decks:
-            # 如果遇到有牌组和前面牌组重名的，重新命名牌组避免重名，保存后并重新加载。
-            # if we've already seen the exact same deck name, rename the
-            # invalid duplicate and reload
-            if deck['name'] in lims:
-                deck['name'] += "1"
-                self.col.decks.save(deck)
-                return self.deckDueList()
-            # 确保没有::之间没有为空的情况。否则牌组名改为recovered，保存后并重新加载。
-            # ensure no sections are blank
-            if not all(deck['name'].split("::")):
-                deck['name'] = "recovered"
-                self.col.decks.save(deck)
-                return self.deckDueList()
-
             p = parent(deck['name'])
 
             # new = 这个牌组当天可添加的新卡片数
             # new
             nlim = self._deckNewLimitSingle(deck)
             if p:
-                if p not in lims:
-                    # 如果有父牌组要确保父牌组存在，
-                    # 否则牌组名改为recovered，保存后并重新加载。
-                    # if parent was missing, this deck is invalid
-                    deck['name'] = "recovered"
-                    self.col.decks.save(deck)
-                    return self.deckDueList()
                 nlim = min(nlim, lims[p][0])
             new = self._newForDeck(deck['id'], nlim)
 
@@ -687,10 +664,10 @@ did = ? and queue = 0 limit ?)""", did, lim)
                 # 因为新卡片队列中的due值为笔记id或随机整数，
                 # 所以按order排序就可以实现按添加顺序或随机顺序抽取新卡片来学习。
                 # fill the queue with the current did
-                self._newQueue = self.col.db.list("""
-select id from cards where did = ? and queue = 0 order by due limit ?""", did, lim)
 
                 # 反序并返回卡ID列表。
+                self._newQueue = self.col.db.list("""
+                select id from cards where did = ? and queue = 0 order by due,ord limit ?""", did, lim)
                 if self._newQueue:
                     self._newQueue.reverse()
                     return True

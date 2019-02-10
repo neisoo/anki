@@ -1,4 +1,4 @@
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # -*- coding: utf-8 -*-
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 import io
@@ -314,6 +314,8 @@ class AddonsDialog(QDialog):
         if self.addons:
             self.form.addonList.setCurrentRow(0)
 
+        self.form.addonList.repaint()
+
     def _onAddonItemSelected(self, row_int):
         try:
             addon = self.addons[row_int][1]
@@ -489,7 +491,8 @@ class ConfigEditor(QDialog):
 
     def updateText(self, conf):
         self.form.editor.setPlainText(
-            json.dumps(conf,sort_keys=True,indent=4, separators=(',', ': ')))
+            json.dumps(conf, ensure_ascii=False, sort_keys=True,
+                       indent=4, separators=(',', ': ')))
 
     def accept(self):
         txt = self.form.editor.toPlainText()
@@ -497,6 +500,10 @@ class ConfigEditor(QDialog):
             new_conf = json.loads(txt)
         except Exception as e:
             showInfo(_("Invalid configuration: ") + repr(e))
+            return
+
+        if not isinstance(new_conf, dict):
+            showInfo(_("Invalid configuration: top level object must be a map"))
             return
 
         if new_conf != self.conf:

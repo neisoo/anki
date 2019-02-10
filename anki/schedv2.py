@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import time
@@ -34,6 +34,7 @@ class Scheduler:
         self.reps = 0
         self.today = None
         self._haveQueues = False
+        self._lrnCutoff = 0
         self._updateCutoff()
 
     def getCard(self):
@@ -205,7 +206,7 @@ order by due""" % self._deckLimit(),
     def deckDueList(self):
         "Returns [deckname, did, rev, lrn, new]"
         self._checkDay()
-        self.col.decks.recoverOrphans()
+        self.col.decks.checkIntegrity()
         decks = self.col.decks.all()
         decks.sort(key=itemgetter('name'))
         lims = {}
@@ -218,27 +219,10 @@ order by due""" % self._deckLimit(),
             return "::".join(parts)
         childMap = self.col.decks.childMap()
         for deck in decks:
-            # if we've already seen the exact same deck name, rename the
-            # invalid duplicate and reload
-            if deck['name'] in lims:
-                deck['name'] += "1"
-                self.col.decks.save(deck)
-                return self.deckDueList()
-            # ensure no sections are blank
-            if not all(deck['name'].split("::")):
-                deck['name'] = "recovered"
-                self.col.decks.save(deck)
-                return self.deckDueList()
-
             p = parent(deck['name'])
             # new
             nlim = self._deckNewLimitSingle(deck)
             if p:
-                if p not in lims:
-                    # if parent was missing, this deck is invalid
-                    deck['name'] = "recovered"
-                    self.col.decks.save(deck)
-                    return self.deckDueList()
                 nlim = min(nlim, lims[p][0])
             new = self._newForDeck(deck['id'], nlim)
             # learning
@@ -370,7 +354,7 @@ did = ? and queue = 0 limit ?)""", did, lim)
             if lim:
                 # fill the queue with the current did
                 self._newQueue = self.col.db.list("""
-select id from cards where did = ? and queue = 0 order by due limit ?""", did, lim)
+                select id from cards where did = ? and queue = 0 order by due,ord limit ?""", did, lim)
                 if self._newQueue:
                     self._newQueue.reverse()
                     return True
@@ -450,15 +434,25 @@ select id from cards where did in %s and queue = 0 limit ?)"""
     # Learning queues
     ##########################################################################
 
-    def _resetLrnCount(self):
-        cutoff = intTime() + self.col.conf['collapseTime']
+    # scan for any newly due learning cards every minute
+    def _updateLrnCutoff(self, force):
+        nextCutoff = intTime() + self.col.conf['collapseTime']
+        if nextCutoff - self._lrnCutoff > 60 or force:
+            self._lrnCutoff = nextCutoff
+            return True
+        return False
 
+    def _maybeResetLrn(self, force):
+        if self._updateLrnCutoff(force):
+            self._resetLrn()
+
+    def _resetLrnCount(self):
         # sub-day
         self.lrnCount = self.col.db.scalar("""
 select count() from cards where did in %s and queue = 1
 and due < ?""" % (
             self._deckLimit()),
-            cutoff) or 0
+            self._lrnCutoff) or 0
         # day
         self.lrnCount += self.col.db.scalar("""
 select count() from cards where did in %s and queue = 3
@@ -470,6 +464,7 @@ select count() from cards where did in %s and queue = 4
 """ % (self._deckLimit()))
 
     def _resetLrn(self):
+        self._updateLrnCutoff(force=True)
         self._resetLrnCount()
         self._lrnQueue = []
         self._lrnDayQueue = []
@@ -491,6 +486,7 @@ limit %d""" % (self._deckLimit(), self.reportLimit), lim=cutoff)
         return self._lrnQueue
 
     def _getLrnCard(self, collapse=False):
+        self._maybeResetLrn(force=collapse and self.lrnCount == 0)
         if self._fillLrn():
             cutoff = time.time()
             if collapse:
@@ -863,7 +859,7 @@ select id from cards where did in %s and queue = 2 and due <= ? limit ?)"""
         return delay
 
     def _lapseIvl(self, card, conf):
-        ivl = max(1, conf['minInt'], card.ivl*conf['mult'])
+        ivl = max(1, conf['minInt'], int(card.ivl*conf['mult']))
         return ivl
 
     def _rescheduleRev(self, card, ease, early):
@@ -1236,14 +1232,14 @@ where id = ?
         if date < datetime.datetime.today():
             date = date + datetime.timedelta(days=1)
 
-        stamp = time.mktime(date.timetuple())
+        stamp = int(time.mktime(date.timetuple()))
         return stamp
 
     def _daysSinceCreation(self):
         startDate = datetime.datetime.fromtimestamp(self.col.crt)
         startDate = startDate.replace(hour=self.col.conf.get("rollover", 4),
                                       minute=0, second=0, microsecond=0)
-        return (time.time() - time.mktime(startDate.timetuple())) // 86400
+        return int((time.time() - time.mktime(startDate.timetuple())) // 86400)
 
     # Deck finished state
     ##########################################################################
@@ -1621,13 +1617,20 @@ where queue < 0""" % (intTime(), self.col.usn()))
     def _moveManuallyBuried(self):
         self.col.db.execute("update cards set queue=-2,mod=%d where queue=-3" % intTime())
 
+    # adding 'hard' in v2 scheduler means old ease entries need shifting
+    # up or down
+    def _remapLearningAnswers(self, sql):
+        self.col.db.execute("update revlog set %s" % sql)
+
     def moveToV1(self):
         self._emptyAllFiltered()
         self._removeAllFromLearning()
 
         self._moveManuallyBuried()
         self._resetSuspendedLearning()
+        self._remapLearningAnswers("ease=ease-1 where ease in (3,4)")
 
     def moveToV2(self):
         self._emptyAllFiltered()
         self._removeAllFromLearning()
+        self._remapLearningAnswers("ease=ease+1 where ease in (2,3)")

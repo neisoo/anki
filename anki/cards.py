@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 import pprint
 
@@ -193,7 +193,7 @@ lapses=?, left=?, odue=?, odid=?, did=? where id = ?""",
 
             # 构造参数：卡片ID、笔记ID、笔记类型ID、牌组ID、卡片模板索引、笔记的标签、笔记的字段。
             data = [self.id, f.id, m['id'], self.odid or self.did, self.ord,
-                    f.stringTags(), f.joinedFields()]
+                    f.stringTags(), f.joinedFields(), self.flags]
             if browser:
                 # 读取卡片模板中的Browser Appearance设置来尽可能简化问题和答案的显示。
                 args = (t.get('bqfmt'), t.get('bafmt'))

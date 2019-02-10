@@ -1,10 +1,10 @@
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # -*- coding: utf-8 -*-
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 from aqt.qt import *
 import aqt.forms
-from aqt import appVersion
+from aqt.utils import versionWithBuild
 
 class ClosableQDialog(QDialog):
     def reject(self):
@@ -29,7 +29,7 @@ def show(mw):
 system. It's free and open source.")
     abouttext += "<p>"+_("Anki is licensed under the AGPL3 license. Please see "
     "the license file in the source distribution for more information.")
-    abouttext += '<p>' + _("Version %s") % appVersion + '<br>'
+    abouttext += '<p>' + _("Version %s") % versionWithBuild() + '<br>'
     abouttext += ("Qt %s PyQt %s<br>") % (QT_VERSION_STR, PYQT_VERSION_STR)
     abouttext += (_("<a href='%s'>Visit website</a>") % aqt.appWebsite) + \
 "</span>"
@@ -125,9 +125,8 @@ system. It's free and open source.")
 please get in touch.")
     abouttext += '<p>' + _("A big thanks to all the people who have provided \
 suggestions, bug reports and donations.")
+    abt.label.setMinimumWidth(800)
+    abt.label.setMinimumHeight(600)
+    dialog.show()
     abt.label.stdHtml(abouttext, js=" ")
-    def resizeAndShow(arg):
-        dialog.adjustSize()
-        dialog.show()
-    abt.label.evalWithCallback("1", resizeAndShow)
     return dialog

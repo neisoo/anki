@@ -1,4 +1,4 @@
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # -*- coding: utf-8 -*-
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
@@ -8,6 +8,7 @@ import zipfile
 import gc
 import time
 import faulthandler
+import platform
 from threading import Thread
 
 from send2trash import send2trash
@@ -15,7 +16,7 @@ from aqt.qt import *
 from anki import Collection
 from anki.utils import  isWin, isMac, intTime, splitFields, ids2str, \
         devMode
-from anki.hooks import runHook, addHook
+from anki.hooks import runHook, addHook, runFilter
 import aqt
 import aqt.progress
 import aqt.webview
@@ -26,7 +27,7 @@ from aqt.utils import showWarning
 import anki.sound
 import anki.mpv
 from aqt.utils import saveGeom, restoreGeom, showInfo, showWarning, \
-    restoreState, getOnlyText, askUser, applyStyles, showText, tooltip, \
+    restoreState, getOnlyText, askUser, showText, tooltip, \
     openHelp, openLink, checkInvalidFilename, getFile
 import sip
 
@@ -61,7 +62,7 @@ class AnkiQt(QMainWindow):
             self.onAppMsg(args[0])
         # Load profile in a timer so we can let the window finish init and not
         # close on profile load error.
-        self.progress.timer(10, self.setupProfile, False)
+        self.progress.timer(10, self.setupProfile, False, requiresCollection=False)
 
     def setupUI(self):
         self.col = None
@@ -248,7 +249,7 @@ close the profile or restart Anki."""))
             restoreGeom(self, "mainWindow")
             restoreState(self, "mainWindow")
         # titlebar
-        self.setWindowTitle("Anki - " + self.pm.name)
+        self.setWindowTitle(self.pm.name + " - Anki")
         # show and raise window for osx
         self.show()
         self.activateWindow()
@@ -696,7 +697,33 @@ title="%s" %s>%s</button>''' % (
         self.form.statusbar.showMessage(text, timeout)
 
     def setupStyle(self):
-        applyStyles(self)
+        buf = ""
+
+        if isWin and platform.release() == '10':
+            # add missing bottom border to menubar
+            buf += """
+QMenuBar {
+  border-bottom: 1px solid #aaa;
+  background: white;
+}        
+"""
+            # qt bug? setting the above changes the browser sidebar
+            # to white as well, so set it back
+            buf += """
+QTreeWidget {
+  background: #eee;
+}            
+            """
+
+        # allow addons to modify the styling
+        buf = runFilter("setupStyle", buf)
+
+        # allow users to extend styling
+        p = os.path.join(aqt.mw.pm.base, "style.css")
+        if os.path.exists(p):
+            buf += open(p).read()
+
+        self.app.setStyleSheet(buf)
 
     # Key handling
     ##########################################################################
@@ -764,8 +791,11 @@ title="%s" %s>%s</button>''' % (
         if cid and self.state == "review":
             card = self.col.getCard(cid)
             self.reviewer.cardQueue.append(card)
-        else:
-            tooltip(_("Reverted to state prior to '%s'.") % n.lower())
+            self.reviewer.nextCard()
+            self.maybeEnableUndo()
+            return
+
+        tooltip(_("Reverted to state prior to '%s'.") % n.lower())
         self.reset()
         self.maybeEnableUndo()
 
@@ -890,6 +920,8 @@ title="%s" %s>%s</button>''' % (
         m.actionPreferences.triggered.connect(self.onPrefs)
         m.actionAbout.triggered.connect(self.onAbout)
         m.actionUndo.triggered.connect(self.onUndo)
+        if qtminor < 11:
+            m.actionUndo.setShortcut(QKeySequence(_("Ctrl+Alt+Z")))
         m.actionFullDatabaseCheck.triggered.connect(self.onCheckDB)
         m.actionCheckMediaDatabase.triggered.connect(self.onCheckMediaDB)
         m.actionDocumentation.triggered.connect(self.onDocumentation)
@@ -1025,7 +1057,17 @@ will be lost. Continue?"""))
             showText(ret)
         else:
             tooltip(ret)
-        self.reset()
+
+        # if an error has directed the user to check the database,
+        # silently clean up any broken reset hooks which distract from
+        # the underlying issue
+        while True:
+            try:
+                self.reset()
+                break
+            except Exception as e:
+                print("swallowed exception in reset hook:", e)
+                continue
         return ret
 
     def onCheckMediaDB(self):
@@ -1269,7 +1311,7 @@ Please ensure a profile is open and Anki is not busy, then try again."""),
 
     def gcWindow(self, obj):
         obj.deleteLater()
-        self.progress.timer(1000, self.doGC, False)
+        self.progress.timer(1000, self.doGC, False, requiresCollection=False)
 
     def disableGC(self):
         gc.collect()

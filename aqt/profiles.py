@@ -1,4 +1,4 @@
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 # Profile handling
@@ -133,6 +133,12 @@ a flash drive.""" % self.base)
     def _unpickle(self, data):
         class Unpickler(pickle.Unpickler):
             def find_class(self, module, name):
+                if module == "PyQt5.sip":
+                    try:
+                        import PyQt5.sip
+                    except:
+                        # use old sip location
+                        module = "sip"
                 fn = super().find_class(module, name)
                 if module == "sip" and name == "_unpickle_type":
                     def wrapper(mod, obj, args):
@@ -156,6 +162,11 @@ a flash drive.""" % self.base)
         try:
             self.profile = self._unpickle(data)
         except:
+            QMessageBox.warning(
+                None, _("Profile Corrupt"), _("""\
+Anki could not read your profile data. Window sizes and your sync login \
+details have been forgotten."""))
+
             print("resetting corrupt profile")
             self.profile = profileConf.copy()
             self.save()
@@ -217,7 +228,7 @@ a flash drive.""" % self.base)
             os.rename(oldFolder, newFolder)
         except WindowsError as e:
             self.db.rollback()
-            if "Access is denied" in str(e):
+            if "WinError 5" in str(e):
                 showWarning(_("""\
 Anki could not rename your profile because it could not rename the profile \
 folder on disk. Please ensure you have permission to write to Documents/Anki \
@@ -332,7 +343,7 @@ create table if not exists profiles
         if self.firstRun:
             self.create(_("User 1"))
             p = os.path.join(self.base, "README.txt")
-            open(p, "w").write(_("""\
+            open(p, "w", encoding="utf8").write(_("""\
 This folder stores all of your Anki data in a single location,
 to make backups easy. To tell Anki to use a different location,
 please see:

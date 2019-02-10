@@ -1,4 +1,4 @@
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # -*- coding: utf-8 -*-
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
@@ -114,8 +114,6 @@ class StudyDeck(QDialog):
     def reject(self):
         saveGeom(self, self.geomKey)
         remHook('reset', self.onReset)
-        if not self.cancel:
-            return self.accept()
         QDialog.reject(self)
 
     def onAddDeck(self):

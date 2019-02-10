@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import copy, re
@@ -646,8 +646,10 @@ update cards set ord = ord - 1, usn = ?, mod = ?
         # generate change map
         map = []
         for t in m['tmpls']:
-            map.append("when ord = %d then %d" % (oldidxs[id(t)], t['ord']))
-
+            oldidx = oldidxs[id(t)]
+            newidx = t['ord']
+            if oldidx != newidx:
+                map.append("when ord = %d then %d" % (oldidx, newidx))
         # 应用笔记类型m的改动并标记数据变化。
         # apply
         self.save(m)
@@ -824,9 +826,9 @@ select id from notes where mid = ?)""" % " ".join(map),
         for f in flds:
             a.append("ankiflag")
             b.append("")
-        data = [1, 1, m['id'], 1, t['ord'], "", joinFields(a)]
+        data = [1, 1, m['id'], 1, t['ord'], "", joinFields(a), 0]
         full = self.col._renderQA(data)['q']
-        data = [1, 1, m['id'], 1, t['ord'], "", joinFields(b)]
+        data = [1, 1, m['id'], 1, t['ord'], "", joinFields(b), 0]
         empty = self.col._renderQA(data)['q']
         # if full and empty are the same, the template is invalid and there is
         # no way to satisfy it

@@ -1,4 +1,4 @@
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 from anki import version as _version
@@ -49,6 +49,7 @@ from anki.utils import checksum
 # -- setting silentlyClose=True to have it close immediately
 # -- define a closeWithCallback() method
 # - have the window opened via aqt.dialogs.open(<name>, self)
+# - have a method reopen(*args), called if the user ask to open the window a second time. Arguments passed are the same than for original opening.
 
 #- make preferences modal? cmd+q does wrong thing
 
@@ -74,6 +75,8 @@ class DialogManager:
                 instance.setWindowState(instance.windowState() & ~Qt.WindowMinimized)
             instance.activateWindow()
             instance.raise_()
+            if hasattr(instance,"reopen"):
+                instance.reopen(*args)
             return instance
         else:
             instance = creator(*args)
@@ -157,7 +160,7 @@ class AnkiApp(QApplication):
     appMsg = pyqtSignal(str)
 
     KEY = "anki"+checksum(getpass.getuser())
-    TMOUT = 5000
+    TMOUT = 30000
 
     def __init__(self, argv):
         QApplication.__init__(self, argv)
@@ -191,7 +194,10 @@ class AnkiApp(QApplication):
         sock.write(txt.encode("utf8"))
         if not sock.waitForBytesWritten(self.TMOUT):
             # existing instance running but hung
-            return False
+            QMessageBox.warning(None, "Anki Already Running",
+                                 "If the existing instance of Anki is not responding, please close it using your task manager, or restart your computer.")
+
+            sys.exit(1)
         sock.disconnectFromServer()
         return True
 
@@ -305,6 +311,17 @@ def _run(argv=None, exec=True):
     if isMac:
         app.setAttribute(Qt.AA_DontShowIconsInMenus)
 
+    # proxy configured?
+    from urllib.request import proxy_bypass, getproxies
+    if 'http' in getproxies():
+        # if it's not set up to bypass localhost, we'll
+        # need to disable proxies in the webviews
+        if not proxy_bypass("127.0.0.1"):
+            print("webview proxy use disabled")
+            proxy = QNetworkProxy()
+            proxy.setType(QNetworkProxy.NoProxy)
+            QNetworkProxy.setApplicationProxy(proxy)
+
     # we must have a usable temp dir
     try:
         tempfile.gettempdir()
@@ -322,6 +339,13 @@ environment points to a valid, writable folder.""")
 
     # i18n
     setupLang(pm, app, opts.lang)
+
+    if isLin and pm.glMode() == "auto":
+        from aqt.utils import gfxDriverIsBroken
+        if gfxDriverIsBroken():
+            pm.nextGlMode()
+            QMessageBox.critical(None, "Error", "Your video driver is incompatible. Please start Anki again, and Anki will switch to a slower, more compatible mode.")
+            sys.exit(1)
 
     # remaining pm init
     pm.ensureProfile()

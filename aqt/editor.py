@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 import re
 import os
@@ -17,11 +17,11 @@ from aqt.qt import *
 from anki.utils import stripHTML, isWin, isMac, namedtmp, json, stripHTMLMedia, \
     checksum
 import anki.sound
-from anki.hooks import runHook, runFilter
+from anki.hooks import runHook, runFilter, addHook
 from aqt.sound import getAudio
 from aqt.webview import AnkiWebView
 from aqt.utils import shortcut, showInfo, showWarning, getFile, \
-    openHelp, tooltip, downArrow
+    openHelp, tooltip, downArrow, qtMenuShortcutWorkaround
 import aqt
 from bs4 import BeautifulSoup
 import requests
@@ -33,9 +33,9 @@ audio =  ("wav", "mp3", "ogg", "flac", "mp4", "swf", "mov", "mpeg", "mkv", "m4a"
 _html = """
 <style>
 html { background: %s; }
-#topbuts { background: %s; }
+#topbutsOuter { background: %s; }
 </style>
-<div id="topbuts">%s</div>
+<div id="topbutsOuter"><div id="topbuts" class="clearfix">%s</div></div>
 <div id="fields"></div>
 <div id="dupes" style="display:none;"><a href="#" onclick="pycmd('dupes');return false;">%s</a></div>
 """
@@ -98,13 +98,15 @@ class Editor:
         righttopbtns = runFilter("setupEditorButtons", righttopbtns, self)
         topbuts = """
             <div id="topbutsleft" style="float:left;">
-                <button onclick="pycmd('fields')">%(flds)s...</button>
-                <button onclick="pycmd('cards')">%(cards)s...</button>
+                <button title='%(fldsTitle)s' onclick="pycmd('fields')">%(flds)s...</button>
+                <button title='%(cardsTitle)s' onclick="pycmd('cards')">%(cards)s...</button>
             </div>
             <div id="topbutsright" style="float:right;">
                 %(rightbts)s
             </div>
-        """ % dict(flds=_("Fields"), cards=_("Cards"), rightbts="".join(righttopbtns))
+        """ % dict(flds=_("Fields"), cards=_("Cards"), rightbts="".join(righttopbtns),
+                   fldsTitle=_("Customize Fields"),
+                   cardsTitle=shortcut(_("Customize Card Templates (Ctrl+L)")))
         bgcol = self.mw.app.palette().window().color().name()
         # then load page
         self.web.stdHtml(_html % (
@@ -143,7 +145,9 @@ class Editor:
     def _addButton(self, icon, cmd, tip="", label="", id=None, toggleable=False,
                    disables=True):
         if icon:
-            if os.path.isabs(icon):
+            if icon.startswith("qrc:/"):
+                iconstr = icon
+            elif os.path.isabs(icon):
                 iconstr = self.resourceToData(icon)
             else:
                 iconstr = "/_anki/imgs/{}.png".format(icon)
@@ -285,7 +289,8 @@ class Editor:
             print("uncaught cmd", cmd)
 
     def mungeHTML(self, txt):
-        txt = re.sub(r"<br>$", "", txt)
+        if txt in ('<br>', '<div><br></div>'):
+            return ''
         return txt
 
     # Setting/unsetting the current note
@@ -331,7 +336,8 @@ class Editor:
                                   oncallback)
 
     def fonts(self):
-        return [(f['font'], f['size'], f['rtl'])
+        return [(runFilter("mungeEditingFontName", f['font']),
+                 f['size'], f['rtl'])
                 for f in self.note.model()['flds']]
 
     def saveNow(self, callback, keepFocus=False):
@@ -400,6 +406,7 @@ class Editor:
             warnings.simplefilter('ignore', UserWarning)
             html = str(BeautifulSoup(html, "html.parser"))
         self.note.fields[field] = html
+        self.note.flush()
         self.loadNote(focusTo=field)
 
     # Tag handling
@@ -582,7 +589,7 @@ to a cloze type first, via Edit>Change Note Type."""))
     def urlToLink(self, url):
         fname = self.urlToFile(url)
         if not fname:
-            return url
+            return None
         return self.fnameToLink(fname)
 
     def fnameToLink(self, fname):
@@ -770,6 +777,9 @@ to a cloze type first, via Edit>Change Note Type."""))
         a = m.addAction(_("Edit HTML"))
         a.triggered.connect(self.onHtmlEdit)
         a.setShortcut(QKeySequence("Ctrl+Shift+X"))
+
+        qtMenuShortcutWorkaround(m)
+
         m.exec_(QCursor.pos())
 
     # LaTeX
@@ -915,12 +925,23 @@ class EditorWebView(AnkiWebView):
 
         # if the user is pasting an image or sound link, convert it to local
         if self.editor.isURL(txt):
-            txt = txt.split("\r\n")[0]
-            return self.editor.urlToLink(txt)
+            url = txt.split("\r\n")[0]
+            link = self.editor.urlToLink(url)
+            if link:
+                return link
+
+            # not media; add it as a normal link if pasting with shift
+            link = '<a href="{}">{}</a>'.format(
+                url, html.escape(txt)
+            )
+            return link
 
         # normal text; convert it to HTML
         txt = html.escape(txt)
-        txt = txt.replace("\n", "<br>")
+        txt = txt.replace("\n", "<br>")\
+            .replace("\t", " "*4)\
+            .replace(" ", "&nbsp;")
+
         return txt
 
     def _processHtml(self, mime):
@@ -964,6 +985,8 @@ class EditorWebView(AnkiWebView):
         # add a comment in the clipboard html so we can tell text is copied
         # from us and doesn't need to be stripped
         clip = self.editor.mw.app.clipboard()
+        if not clip.ownsClipboard():
+            return
         mime = clip.mimeData()
         if not mime.hasHtml():
             return
@@ -981,3 +1004,10 @@ class EditorWebView(AnkiWebView):
         a.triggered.connect(self.onPaste)
         runHook("EditorWebView.contextMenuEvent", self, m)
         m.popup(QCursor.pos())
+
+# QFont returns "Kozuka Gothic Pro L" but WebEngine expects "Kozuka Gothic Pro Light"
+# - there may be other cases like a trailing 'Bold' that need fixing, but will
+# wait for further reports first.
+def fontMungeHack(font):
+    return re.sub(" L$", " Light", font)
+addHook("mungeEditingFontName", fontMungeHack)

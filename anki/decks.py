@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import copy, operator
+import unicodedata
+
 from anki.utils import intTime, ids2str, json
 from anki.hooks import runHook
 from anki.consts import *
@@ -155,8 +157,9 @@ class DeckManager:
 
         # 从现有的牌组中找出名字为name的牌组，并返回牌组ID。
         name = name.replace('"', '')
+        name = unicodedata.normalize("NFC", name)
         for id, g in list(self.decks.items()):
-            if g['name'].lower() == name.lower():
+            if unicodedata.normalize("NFC", g['name'].lower()) == name.lower():
                 return int(id)
         if not create:
             return None
@@ -591,13 +594,46 @@ class DeckManager:
         return self.col.db.list("select id from cards where did in "+
                                 ids2str(dids))
 
-    def recoverOrphans(self):
+    def _recoverOrphans(self):
         """如果卡片的牌组ID无效，将卡片的牌组ID改为1。"""
         dids = list(self.decks.keys())
         mod = self.col.db.mod
         self.col.db.execute("update cards set did = 1 where did not in "+
                             ids2str(dids))
         self.col.db.mod = mod
+
+    def _checkDeckTree(self):
+        decks = self.col.decks.all()
+        decks.sort(key=operator.itemgetter('name'))
+        names = set()
+
+        for deck in decks:
+            # two decks with the same name?
+            if deck['name'] in names:
+                print("fix duplicate deck name", deck['name'].encode("utf8"))
+                deck['name'] += "%d" % intTime(1000)
+                self.save(deck)
+
+            # ensure no sections are blank
+            if not all(deck['name'].split("::")):
+                print("fix deck with missing sections", deck['name'].encode("utf8"))
+                deck['name'] = "recovered%d" % intTime(1000)
+                self.save(deck)
+
+            # immediate parent must exist
+            if "::" in deck['name']:
+                immediateParent = "::".join(deck['name'].split("::")[:-1])
+                if immediateParent not in names:
+                    print("fix deck with missing parent", deck['name'].encode("utf8"))
+                    self._ensureParents(deck['name'])
+                    names.add(immediateParent)
+
+            names.add(deck['name'])
+
+    def checkIntegrity(self):
+        """检查牌组完整性。"""
+        self._recoverOrphans()
+        self._checkDeckTree()
 
     # Deck selection
     #############################################################

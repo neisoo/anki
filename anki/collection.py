@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 import pprint
@@ -678,7 +678,7 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
         """
 
         "Returns hash of id, question, answer."
-        # data is [cid, nid, mid, did, ord, tags, flds]
+        # data is [cid, nid, mid, did, ord, tags, flds, cardFlags]
         # unpack fields and create dict
         flist = splitFields(data[6])
         fields = {}
@@ -689,6 +689,7 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
         fields['Type'] = model['name']
         fields['Deck'] = self.decks.name(data[3])
         fields['Subdeck'] = fields['Deck'].split('::')[-1]
+        fields['CardFlag'] = self._flagNameFromCardFlags(data[7])
         if model['type'] == MODEL_STD:
             template = model['tmpls'][data[4]]
         else:
@@ -722,12 +723,18 @@ where c.nid = n.id and c.id in %s group by nid""" % ids2str(cids)):
         return d
 
     def _qaData(self, where=""):
-        "Return [cid, nid, mid, did, ord, tags, flds] db query"
+        "Return [cid, nid, mid, did, ord, tags, flds, cardFlags] db query"
         return self.db.execute("""
-select c.id, f.id, f.mid, c.did, c.ord, f.tags, f.flds
+select c.id, f.id, f.mid, c.did, c.ord, f.tags, f.flds, c.flags
 from cards c, notes f
 where c.nid == f.id
 %s""" % where)
+
+    def _flagNameFromCardFlags(self, flags):
+        flag = flags & 0b111
+        if not flag:
+            return ""
+        return "flag%d" % flag
 
     # Finding cards
     ##########################################################################
@@ -984,6 +991,16 @@ and type = 0""", intTime(), self.usn())
             self.db.execute(
                 "update cards set due = ?, ivl = 1, mod = ?, usn = ? where id in %s"
                 % ids2str(ids), self.sched.today, intTime(), self.usn())
+        # v2 sched had a bug that could create decimal intervals
+        curs = self.db.cursor()
+
+        curs.execute("update cards set ivl=round(ivl),due=round(due) where ivl!=round(ivl) or due!=round(due)")
+        if curs.rowcount:
+            problems.append("Fixed %d cards with v2 scheduler bug." % curs.rowcount)
+
+        curs.execute("update revlog set ivl=round(ivl),lastIvl=round(lastIvl) where ivl!=round(ivl) or lastIvl!=round(lastIvl)")
+        if curs.rowcount:
+            problems.append("Fixed %d review history entries with v2 scheduler bug." % curs.rowcount)
         # and finally, optimize
         self.optimize()
         newSize = os.stat(self.path)[stat.ST_SIZE]
@@ -1043,5 +1060,5 @@ and type = 0""", intTime(), self.usn())
 
     def setUserFlag(self, flag, cids):
         assert 0 <= flag <= 7
-        self.db.execute("update cards set flags = (flags & ~?) | ? where id in %s" %
-                        ids2str(cids), 0b111, flag)
+        self.db.execute("update cards set flags = (flags & ~?) | ?, usn=?, mod=? where id in %s" %
+                        ids2str(cids), 0b111, flag, self._usn, intTime())

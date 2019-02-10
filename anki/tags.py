@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright: Damien Elmes <anki@ichi2.net>
+# Copyright: Ankitects Pty Ltd and contributors
 # License: GNU AGPL, version 3 or later; http://www.gnu.org/licenses/agpl.html
 
 from anki.utils import intTime, ids2str, json
@@ -145,7 +145,7 @@ class TagManager:
         "Delete tags if they exist."
         def wildcard(pat, str):
             pat = re.escape(pat).replace('\\*', '.*')
-            return re.search(pat, str, re.IGNORECASE)
+            return re.match("^"+pat+"$", str, re.IGNORECASE)
         currentTags = self.split(tags)
         for tag in self.split(deltags):
             # find tags, ignoring case
